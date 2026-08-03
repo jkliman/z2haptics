@@ -94,11 +94,22 @@ fastest way to see whether a gate is set sensibly: a band that never crosses its
 gate can never trigger, and one that sits above it constantly will fire on
 everything.
 
-**Profile** — full tuning UI. Every band's frequency range, sensitivity, gate,
-refractory, pulse duration, strength range, loudness window and priority, plus
-master strength and the motor limits. **Edits apply live** to the running engine,
-so you can tune while a game plays and feel the change immediately. Save writes
-to `~/.z2haptics/profiles/` rather than overwriting the shipped profile.
+**Profile** — full tuning UI, with each band's **live meter sitting directly above
+its own controls**: bar = level, red line = gate, flash = onset, plus onset rate,
+current spectral flatness, and pulses sent. Edits apply immediately to the running
+engine, so you change a value and watch that band react — no tab switching.
+
+Each band also says *which check is blocking it*, because five interacting
+thresholds are not tunable by guesswork:
+
+```
+  2.4 onsets/s   sent 31    flatness 0.71   fired 44
+  Busy. Consider a Max rate cap so this band cannot starve others.
+```
+
+Counters reset automatically when you move a threshold, so what you see always
+reflects the current setting rather than totals accumulated under the old one.
+Save writes to `~/.z2haptics/profiles/` rather than overwriting the shipped copy.
 
 **Audio** — pick which output to capture. If you use a virtual mixer (Wave Link,
 VoiceMeeter), choose the device carrying game audio.

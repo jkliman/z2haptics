@@ -108,7 +108,13 @@ class BandMeter(QWidget):
 
 
 class BandEditor(QGroupBox):
-    """Editor for one band. Emits `changed` whenever any field is edited."""
+    """Editor for one band, with its live meter and rejection readout inline.
+
+    The activity display sits with the controls rather than on a separate tab so
+    a threshold change and its effect are visible at the same time. Tuning five
+    interacting checks by adjusting one, switching tabs, watching, and switching
+    back does not work.
+    """
 
     changed = Signal()
     removed = Signal(object)
@@ -120,6 +126,20 @@ class BandEditor(QGroupBox):
         self.setChecked(band.enabled)
 
         outer = QVBoxLayout(self)
+
+        # -- live activity, above the controls that shape it
+        self.meter = BandMeter(band.name)
+        outer.addWidget(self.meter)
+
+        self.readout = QLabel("waiting for audio...")
+        self.readout.setStyleSheet("font-family: Consolas, monospace; color: gray;")
+        outer.addWidget(self.readout)
+
+        self.advice = QLabel("")
+        self.advice.setWordWrap(True)
+        self.advice.setStyleSheet("color: #b48ead;")
+        outer.addWidget(self.advice)
+
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -255,6 +275,59 @@ class BandEditor(QGroupBox):
         layout.setContentsMargins(0, 0, 0, 0)
         w.setLayout(layout)
         return w
+
+    # -- live feedback --------------------------------------------------------
+
+    def set_activity(self, activity: dict) -> None:
+        """Update the inline meter and readout from one poll of engine state."""
+        level = activity.get("level", 0.0)
+        self.meter.set_level(level, self.band.gate, activity.get("open", False))
+
+        rate = activity.get("rate", 0.0)
+        flatness = activity.get("flatness", 0.0)
+        sent = activity.get("sent", 0)
+        rej = activity.get("rejections") or {}
+
+        self.readout.setText(
+            f"{rate:5.1f} onsets/s   sent {sent:<5} "
+            f"flatness {flatness:4.2f}   fired {rej.get('accepted', 0)}"
+        )
+        self.advice.setText(self._advice(rate, rej, activity))
+
+    def _advice(self, rate: float, rej: dict, activity: dict) -> str:
+        """Say which knob to reach for, based on what is actually happening."""
+        if not rej or not rej.get("frames"):
+            return ""
+
+        if rej.get("accepted", 0) == 0:
+            if activity.get("peak", 0.0) < self.band.gate:
+                return "Never reached the gate — lower Gate, or this band covers " \
+                       "frequencies the audio does not contain."
+            worst, _ = activity.get("dominant", ("threshold", 0))
+            return {
+                "threshold": "Blocked by Sensitivity — lower it.",
+                "refractory": "Blocked by Refractory — events are closer together "
+                              "than the spacing allows.",
+                "share": "Blocked by Min share — another band dominates the frame.",
+                "flatness": "Blocked by Min flatness — this content is too tonal.",
+            }.get(worst, "Nothing fired.")
+
+        if rate > 8:
+            return "Firing very often — the motor will blur these together. " \
+                   "Raise Sensitivity, Min flatness, or Refractory."
+        if rate > 4:
+            return "Busy. Consider a Max rate cap so this band cannot starve others."
+        return ""
+
+    def reset_meter(self) -> None:
+        self.readout.setText("waiting for audio...")
+        self.advice.setText("")
+
+    def flash(self, strength: int) -> None:
+        self.meter.flash(strength)
+
+    def tick(self) -> None:
+        self.meter.update()
 
     def _on_change(self, *_) -> None:
         if self._suspend:

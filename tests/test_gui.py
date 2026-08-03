@@ -260,6 +260,83 @@ def test_process_list_is_parsed_from_free_text(controller, config):
     window.close()
 
 
+def test_band_editor_shows_live_activity(qapp):
+    """The meter and readout must live with the controls that shape them."""
+    band = Band(name="gunfire", low_hz=90, high_hz=450, gate=0.003)
+    editor = BandEditor(band)
+
+    editor.set_activity({
+        "level": 0.02, "peak": 0.05, "gate": 0.003, "open": True,
+        "flatness": 0.72, "rate": 2.5, "sent": 14,
+        "rejections": {"frames": 900, "accepted": 20, "threshold": 700,
+                       "refractory": 100, "share": 40, "flatness": 40},
+        "dominant": ("threshold", 700),
+    })
+
+    assert "2.5" in editor.readout.text()
+    assert "0.72" in editor.readout.text()
+    assert "14" in editor.readout.text()
+
+
+def test_editor_advises_when_a_band_never_fires(qapp):
+    band = Band(name="gunfire", low_hz=90, high_hz=450, gate=0.05)
+    editor = BandEditor(band)
+
+    editor.set_activity({
+        "level": 0.001, "peak": 0.002, "gate": 0.05, "open": False,
+        "flatness": 0.1, "rate": 0.0, "sent": 0,
+        "rejections": {"frames": 900, "accepted": 0, "threshold": 0,
+                       "refractory": 0, "share": 0, "flatness": 0},
+        "dominant": ("threshold", 0),
+    })
+    assert "gate" in editor.advice.text().lower()
+
+
+def test_editor_names_the_blocking_check(qapp):
+    band = Band(name="gunfire", low_hz=90, high_hz=450, gate=0.001)
+    editor = BandEditor(band)
+
+    editor.set_activity({
+        "level": 0.02, "peak": 0.05, "gate": 0.001, "open": True,
+        "flatness": 0.1, "rate": 0.0, "sent": 0,
+        "rejections": {"frames": 900, "accepted": 0, "threshold": 10,
+                       "refractory": 0, "share": 0, "flatness": 800},
+        "dominant": ("flatness", 800),
+    })
+    assert "flatness" in editor.advice.text().lower()
+
+
+def test_editor_warns_when_firing_too_often(qapp):
+    band = Band(name="gunfire", low_hz=90, high_hz=450, gate=0.001)
+    editor = BandEditor(band)
+    editor.set_activity({
+        "level": 0.02, "peak": 0.05, "gate": 0.001, "open": True,
+        "flatness": 0.8, "rate": 15.0, "sent": 300,
+        "rejections": {"frames": 900, "accepted": 300, "threshold": 100,
+                       "refractory": 0, "share": 0, "flatness": 0},
+        "dominant": ("threshold", 100),
+    })
+    assert editor.advice.text(), "no warning at 15 onsets/sec"
+
+
+def test_editing_a_band_resets_the_counters(controller, config):
+    """Counts from the old setting would misrepresent the new one."""
+    window = SettingsWindow(controller, config)
+    window._refresh_profile_combos()
+    window._load_profile_into_form()
+
+    called = []
+    controller.reset_counters = lambda: called.append(True)
+
+    window._band_editors[0].sensitivity.setValue(3.3)
+    assert called, "counters were not reset after a threshold change"
+    window.close()
+
+
+def test_reset_counters_is_safe_while_stopped(controller):
+    controller.reset_counters()
+
+
 def test_closing_the_window_hides_rather_than_quits(controller, config):
     window = SettingsWindow(controller, config)
     window.show()

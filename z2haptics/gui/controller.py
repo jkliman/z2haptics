@@ -10,6 +10,7 @@ across thread boundaries.
 from __future__ import annotations
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -34,6 +35,7 @@ class EngineController(QObject):
     testResult = Signal(str)                   # response text from a test pulse
     x1ProfilesLoaded = Signal(list)            # Control Panel profile names
     apiStatus = Signal(bool, str)
+    bandActivity = Signal(dict)                # band -> live tuning readout
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -50,6 +52,10 @@ class EngineController(QObject):
         self._poll = QTimer(self)
         self._poll.setInterval(100)
         self._poll.timeout.connect(self._emit_state)
+
+        # Sliding window of (timestamp, accepted-count) per band, for onset rate.
+        self._accept_history: dict[str, list[tuple[float, int]]] = {}
+        self._peaks: dict[str, float] = {}
 
         self.reload_profiles()
 
@@ -209,11 +215,56 @@ class EngineController(QObject):
         })
 
         levels = {}
+        activity = {}
+        now = time.monotonic()
+
         for band in engine.profile.bands:
             state = engine.analyzer.state.get(band.name)
-            if state is not None:
-                levels[band.name] = (state.level, band.gate, state.level >= band.gate)
+            if state is None:
+                continue
+            levels[band.name] = (state.level, band.gate, state.level >= band.gate)
+
+            peak = max(self._peaks.get(band.name, 0.0), state.level)
+            self._peaks[band.name] = peak
+
+            # Onset rate over a 5s window, from the change in accepted count.
+            hist = self._accept_history.setdefault(band.name, [])
+            hist.append((now, state.accepted))
+            cutoff = now - 5.0
+            while len(hist) > 2 and hist[0][0] < cutoff:
+                hist.pop(0)
+            span = now - hist[0][0]
+            rate = (state.accepted - hist[0][1]) / span if span > 0.5 else 0.0
+
+            bstats = stats.bands.get(band.name)
+            activity[band.name] = {
+                "level": state.level,
+                "peak": peak,
+                "gate": band.gate,
+                "open": state.level >= band.gate,
+                "flatness": state.last_flatness,
+                "rate": rate,
+                "sent": bstats.queued if bstats else 0,
+                "rejections": state.rejection_summary(),
+                "dominant": state.dominant_rejection(),
+            }
+
         self.levelsUpdated.emit(levels)
+        self.bandActivity.emit(activity)
+
+    def reset_counters(self) -> None:
+        """Zero the tallies so a tuning change can be judged on fresh numbers."""
+        engine = self.engine
+        if engine is None:
+            return
+        for state in engine.analyzer.state.values():
+            state.reset_counters()
+        engine.stats.bands.clear()
+        engine.stats.onsets = 0
+        engine.stats.pulses = 0
+        engine.stats.suppressed_stacking = 0
+        self._accept_history.clear()
+        self._peaks.clear()
 
     # -- one-off device commands ---------------------------------------------
 

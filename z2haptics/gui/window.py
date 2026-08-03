@@ -65,6 +65,7 @@ class SettingsWindow(QWidget):
         controller.testResult.connect(self._on_test_result)
         controller.apiStatus.connect(self._on_api_status)
         controller.x1ProfilesLoaded.connect(self._on_x1_profiles)
+        controller.bandActivity.connect(self._on_band_activity)
 
         # Repaint meters so onset flashes decay even when no audio is arriving.
         self._repaint = QTimer(self)
@@ -162,6 +163,8 @@ class SettingsWindow(QWidget):
     def _tick_meters(self) -> None:
         for meter in self._meters.values():
             meter.update()
+        for editor in self._band_editors:
+            editor.tick()
 
     def _on_levels(self, levels: dict) -> None:
         for name, (level, gate, is_open) in levels.items():
@@ -173,6 +176,15 @@ class SettingsWindow(QWidget):
         meter = self._meters.get(band)
         if meter is not None:
             meter.flash(strength)
+        for editor in self._band_editors:
+            if editor.band.name == band:
+                editor.flash(strength)
+
+    def _on_band_activity(self, activity: dict) -> None:
+        for editor in self._band_editors:
+            data = activity.get(editor.band.name)
+            if data:
+                editor.set_activity(data)
 
     def _on_stats(self, stats: dict) -> None:
         for key, lbl in self.stat_labels.items():
@@ -215,10 +227,27 @@ class SettingsWindow(QWidget):
         self.profile_combo2.currentTextChanged.connect(self._on_profile_selected)
         row.addWidget(QLabel("Editing:"))
         row.addWidget(self.profile_combo2, 1)
+        reset_btn = QPushButton("Reset counters")
+        reset_btn.setToolTip(
+            "Zero the onset tallies so the next change is judged on fresh numbers "
+            "instead of totals dominated by the old settings.\n\n"
+            "Detection state (noise floor, flux history) is kept, so the reading "
+            "settles again immediately.")
+        reset_btn.clicked.connect(self._reset_counters)
+        row.addWidget(reset_btn)
         reload_btn = QPushButton("Reload from disk")
         reload_btn.clicked.connect(self._reload_profiles)
         row.addWidget(reload_btn)
         v.addLayout(row)
+
+        live_hint = QLabel(
+            "Each band below shows its own live meter: bar = level, red line = "
+            "gate, flash = onset. Edits apply immediately, so change a value and "
+            "watch that band react. Hit Reset counters after each change."
+        )
+        live_hint.setWordWrap(True)
+        live_hint.setStyleSheet("color: gray;")
+        v.addWidget(live_hint)
 
         master = QGroupBox("Master")
         mf = QFormLayout(master)
@@ -377,6 +406,10 @@ class SettingsWindow(QWidget):
         self._on_profile_edited()
 
     def _on_band_edited(self) -> None:
+        # Counts accumulated under the old setting say nothing about the new one,
+        # so clear them the moment a threshold moves. The rate readout re-settles
+        # within a second or so of releasing the control.
+        self.controller.reset_counters()
         self._on_profile_edited()
 
     def _on_profile_edited(self) -> None:
@@ -434,6 +467,11 @@ class SettingsWindow(QWidget):
         self._load_profile_into_form()
         self._rebuild_meters()
         QMessageBox.information(self, "z2haptics", f"Saved to\n{path}")
+
+    def _reset_counters(self) -> None:
+        self.controller.reset_counters()
+        for editor in self._band_editors:
+            editor.reset_meter()
 
     def _reload_profiles(self) -> None:
         self.controller.reload_profiles()

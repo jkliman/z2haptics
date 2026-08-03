@@ -147,6 +147,39 @@ class BandState:
             "accepted": self.accepted,
         }
 
+    def reset_counters(self) -> None:
+        """Zero the tallies without disturbing detection state.
+
+        Live tuning needs this: after changing a threshold you want to judge the
+        new setting on fresh numbers, not on a total dominated by the minutes
+        spent at the old one. Rolling detection state (flux history, background,
+        refractory clock) is deliberately left intact so the change is measured
+        without also re-learning the noise floor.
+        """
+        self.frames = 0
+        self.rej_gate = 0
+        self.rej_threshold = 0
+        self.rej_refractory = 0
+        self.rej_share = 0
+        self.rej_flatness = 0
+        self.accepted = 0
+
+    def dominant_rejection(self) -> tuple[str, int]:
+        """The check discarding the most frames, ignoring the gate.
+
+        The gate is excluded because in normal use it rejects the overwhelming
+        majority of frames -- most of the time nothing is happening -- so it
+        would always win and tell you nothing.
+        """
+        counts = {
+            "threshold": self.rej_threshold,
+            "refractory": self.rej_refractory,
+            "share": self.rej_share,
+            "flatness": self.rej_flatness,
+        }
+        name = max(counts, key=counts.get)
+        return name, counts[name]
+
 
 class BandAnalyzer:
     """Sliding-window FFT analyzer that emits onsets per configured band.
