@@ -125,6 +125,28 @@ class BandState:
     last_threshold: float = 0.0
     last_flatness: float = 0.0
 
+    # Why frames did not become onsets. "Nothing is vibrating" and "it fires on
+    # everything" are both far easier to fix when you can see which check is
+    # responsible instead of guessing at four interacting knobs.
+    frames: int = 0
+    rej_gate: int = 0
+    rej_threshold: int = 0
+    rej_refractory: int = 0
+    rej_share: int = 0
+    rej_flatness: int = 0
+    accepted: int = 0
+
+    def rejection_summary(self) -> dict[str, int]:
+        return {
+            "frames": self.frames,
+            "gate": self.rej_gate,
+            "threshold": self.rej_threshold,
+            "refractory": self.rej_refractory,
+            "share": self.rej_share,
+            "flatness": self.rej_flatness,
+            "accepted": self.accepted,
+        }
+
 
 class BandAnalyzer:
     """Sliding-window FFT analyzer that emits onsets per configured band.
@@ -297,19 +319,27 @@ class BandAnalyzer:
             st.last_threshold = threshold
             hist.append(flux)
 
+            st.frames += 1
+
             if st.level < band.gate:
+                st.rej_gate += 1
                 continue
             if flux <= threshold:
+                st.rej_threshold += 1
                 continue
             if (self._clock - st.last_onset_s) * 1000.0 < band.refractory_ms:
+                st.rej_refractory += 1
                 continue
 
             share = flux / total_flux
             if band.min_share > 0.0 and share < band.min_share:
+                st.rej_share += 1
                 continue
             if band.min_flatness > 0.0 and flatness < band.min_flatness:
+                st.rej_flatness += 1
                 continue
 
+            st.accepted += 1
             st.last_onset_s = self._clock
 
             # Strength from loudness, mapped across the band's dB window.

@@ -309,6 +309,81 @@ def cmd_monitor(args) -> int:
     return 0
 
 
+def cmd_diagnose(args) -> int:
+    """Capture live audio and report which check is stopping each band firing.
+
+    Answers "why is nothing vibrating" (or "why is everything vibrating")
+    directly, instead of leaving you to guess at four interacting thresholds.
+    """
+    profiles = _load_profiles(args)
+    profile = _pick_profile(profiles, args.profile)
+
+    analyzer = BandAnalyzer(profile.bands, samplerate=args.samplerate)
+    peak = {b.name: 0.0 for b in profile.bands}
+
+    def on_audio(mono):
+        analyzer.push(mono)
+        for b in profile.bands:
+            st = analyzer.state.get(b.name)
+            if st:
+                peak[b.name] = max(peak[b.name], st.level)
+
+    cap = LoopbackCapture(on_audio, device_name=args.device,
+                          samplerate=args.samplerate, blocksize=512)
+    try:
+        cap.start()
+    except Exception as e:
+        print(f"capture failed: {e}", file=sys.stderr)
+        return 1
+
+    print(f"Profile : {profile.name}")
+    print(f"Device  : {cap.resolved_name}")
+    print(f"\nListening for {args.seconds}s -- PLAY THE AUDIO YOU CARE ABOUT NOW.\n")
+    for remaining in range(args.seconds, 0, -1):
+        sys.stdout.write(f"\r  {remaining:2d}s ")
+        sys.stdout.flush()
+        time.sleep(1)
+    cap.stop()
+    print("\r" + " " * 20)
+
+    print(f"{'band':<10}{'frames':>8}{'gate':>8}{'thresh':>8}{'refrac':>8}"
+          f"{'share':>7}{'flat':>7}{'FIRED':>7}")
+    print("-" * 63)
+    total_fired = 0
+    for band in profile.bands:
+        st = analyzer.state.get(band.name)
+        if st is None:
+            continue
+        s = st.rejection_summary()
+        total_fired += s["accepted"]
+        print(f"{band.name:<10}{s['frames']:>8}{s['gate']:>8}{s['threshold']:>8}"
+              f"{s['refractory']:>8}{s['share']:>7}{s['flatness']:>7}"
+              f"{s['accepted']:>7}")
+
+    print("\nPeak level vs gate:")
+    for band in profile.bands:
+        p = peak[band.name]
+        verdict = "never reached gate" if p < band.gate else "ok"
+        print(f"  {band.name:<10} peak={p:.5f}  gate={band.gate:.5f}   {verdict}")
+
+    print()
+    if total_fired == 0:
+        print("Nothing fired. Read the largest column above:")
+        print("  gate    -> level never got above `gate`; lower it, or the band")
+        print("             covers frequencies this audio does not contain")
+        print("  thresh  -> `sensitivity` is too high for this material")
+        print("  refrac  -> events are closer together than `refractory_ms`")
+        print("  share   -> another band dominates; lower `min_share`")
+        print("  flat    -> content is too tonal; lower `min_flatness`")
+    else:
+        rate = total_fired / max(args.seconds, 1)
+        print(f"{total_fired} onsets over {args.seconds}s ({rate:.1f}/sec).")
+        if rate > 12:
+            print("That is a lot -- the motor cannot keep up and events will blur.")
+            print("Raise `sensitivity`, `min_flatness`, or `refractory_ms`.")
+    return 0
+
+
 def cmd_gui(args) -> int:
     try:
         from .gui.app import main as gui_main
@@ -408,6 +483,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-auto-switch", action="store_true",
                    help="stay on one profile instead of following the foreground app")
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("diagnose", help="find out which check is blocking a band")
+    add_common(p)
+    p.add_argument("--seconds", type=int, default=15, help="how long to listen")
+    p.set_defaults(func=cmd_diagnose)
 
     p = sub.add_parser("gui", help="run the system tray app")
     p.add_argument("--minimised", "--minimized", action="store_true", dest="minimised",
