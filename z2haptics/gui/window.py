@@ -62,6 +62,9 @@ class SettingsWindow(QWidget):
         controller.onsetDetected.connect(self._on_onset)
         controller.profileChanged.connect(self._on_profile_changed)
         controller.errorRaised.connect(self._on_error)
+        controller.testResult.connect(self._on_test_result)
+        controller.apiStatus.connect(self._on_api_status)
+        controller.x1ProfilesLoaded.connect(self._on_x1_profiles)
 
         # Repaint meters so onset flashes decay even when no audio is arriving.
         self._repaint = QTimer(self)
@@ -290,19 +293,12 @@ class SettingsWindow(QWidget):
         self.max_duty.setValue(profile.limits.max_duty)
         self.processes.setPlainText(", ".join(profile.processes))
 
-        self.x1_profile.clear()
-        self.x1_profile.addItem("")
-        try:
-            ok, _ = self.controller.api_available()
-            if ok:
-                from ..api import X1Connection
-                conn = X1Connection()
-                try:
-                    self.x1_profile.addItems(conn.profile_list())
-                finally:
-                    conn.close()
-        except Exception:
-            pass
+        # The Control Panel profile list is fetched asynchronously; keep whatever
+        # we already have so the combo does not flicker empty on every reload.
+        existing = [self.x1_profile.itemText(i) for i in range(self.x1_profile.count())]
+        if not existing:
+            self.x1_profile.addItem("")
+            self.controller.check_api()
         self.x1_profile.setCurrentText(profile.x1_profile or "")
 
         for widget in (self.strength_scale, self.min_gap, self.max_pulses,
@@ -587,8 +583,20 @@ class SettingsWindow(QWidget):
         return w
 
     def _fire(self, duration: int, strength: int) -> None:
-        resp = self.controller.test_pulse(duration, strength)
-        self.test_result.setText(f"vibrate {duration} {strength}  ->  {resp}")
+        self.controller.test_pulse(duration, strength)
+        self.test_result.setText(f"vibrate {duration} {strength}  ->  ...")
+
+    def _on_test_result(self, text: str) -> None:
+        self.test_result.setText(text)
+
+    def _on_x1_profiles(self, names: list) -> None:
+        current = self.x1_profile.currentText()
+        self.x1_profile.blockSignals(True)
+        self.x1_profile.clear()
+        self.x1_profile.addItem("")
+        self.x1_profile.addItems(names)
+        self.x1_profile.setCurrentText(current)
+        self.x1_profile.blockSignals(False)
 
     def _fire_test(self) -> None:
         d, s = self.test_duration.value(), self.test_strength.value()
@@ -699,7 +707,11 @@ class SettingsWindow(QWidget):
         self.config.save()
 
     def _check_api(self) -> None:
-        ok, message = self.controller.api_available()
+        self.api_status.setText("Checking...")
+        self.api_status.setStyleSheet("color: gray;")
+        self.controller.check_api()
+
+    def _on_api_status(self, ok: bool, message: str) -> None:
         self.api_status.setText(("OK — " if ok else "Not available — ") + message)
         self.api_status.setStyleSheet("color: #a3be8c;" if ok else "color: #bf616a;")
 

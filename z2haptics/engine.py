@@ -125,7 +125,14 @@ class HapticEngine:
 
     # -- profile switching ----------------------------------------------------
 
-    def apply_profile(self, profile: Profile) -> None:
+    def apply_profile(self, profile: Profile, switch_x1: bool = True) -> None:
+        """Switch the active profile.
+
+        `switch_x1` controls whether the Control Panel's own profile is changed
+        too. That call writes configuration to the mouse and can take a long
+        time, so callers on a UI thread must pass False and perform the switch
+        on a worker instead.
+        """
         with self._lock:
             if profile.name == self.profile.name:
                 return
@@ -137,12 +144,17 @@ class HapticEngine:
             self.sink.max_duty = profile.limits.max_duty
             self.stats.profile_switches += 1
 
-        # Optionally drive the Control Panel's own profile too.
-        if profile.x1_profile and not self.dry_run:
-            try:
-                self.sink.conn.profile_set(profile.x1_profile)
-            except Exception as e:
-                log.warning("could not set X1 profile %r: %s", profile.x1_profile, e)
+        if switch_x1:
+            self.switch_x1_profile(profile)
+
+    def switch_x1_profile(self, profile: Profile) -> None:
+        """Drive the Control Panel's own profile. Blocking -- never call from a UI thread."""
+        if not profile.x1_profile or self.dry_run:
+            return
+        try:
+            self.sink.conn.profile_set(profile.x1_profile)
+        except Exception as e:
+            log.warning("could not set X1 profile %r: %s", profile.x1_profile, e)
 
     def _watch_foreground(self) -> None:
         while not self._stop.is_set():

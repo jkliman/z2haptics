@@ -94,6 +94,83 @@ def test_duration_and_strength_are_clamped():
     assert sent == [f"vibrate {DURATION_MAX} 100", "vibrate 0 0"]
 
 
+def test_connection_serialises_concurrent_commands():
+    """Regression: the GUI froze when switching profiles.
+
+    Two threads shared one X1Connection. Each command is a write followed by a
+    blocking read, so they interleaved and each could consume the other's
+    response -- after which both blocked forever waiting for a reply that had
+    already been read. Commands must not overlap.
+    """
+    import threading
+
+    conn = X1Connection()
+    overlaps = []
+    active = []
+    lock = threading.Lock()
+
+    def fake_io(cmd, expect_response=True):
+        with lock:
+            active.append(cmd)
+            if len(active) > 1:
+                overlaps.append(list(active))
+        time.sleep(0.002)          # stand in for the pipe round trip
+        with lock:
+            active.remove(cmd)
+        return "OK"
+
+    # Exercise the real locking in command() around a fake transport.
+    conn._f = object()
+    original = X1Connection.command
+
+    def locked_command(self, cmd, expect_response=True):
+        with self._lock:
+            return fake_io(cmd, expect_response)
+
+    X1Connection.command = locked_command
+    try:
+        threads = [
+            threading.Thread(target=lambda i=i: [conn.command(f"c{i}-{j}") for j in range(20)])
+            for i in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+            assert not t.is_alive(), "thread deadlocked"
+    finally:
+        X1Connection.command = original
+
+    assert not overlaps, f"commands overlapped: {overlaps[:3]}"
+
+
+def test_apply_profile_can_skip_the_slow_device_call():
+    """`Profile Set` writes to the mouse, so a UI thread must be able to opt out."""
+    from z2haptics.profiles import Profile as P
+
+    calls = []
+    p1 = P(name="A", bands=[band("x", 1)], x1_profile="one")
+    p2 = P(name="B", bands=[band("y", 1)], x1_profile="two")
+
+    engine = HapticEngine.__new__(HapticEngine)
+    engine.profile = p1
+    engine.dry_run = False
+    engine.stats = type("S", (), {"profile_switches": 0})()
+    engine._lock = __import__("threading").Lock()
+    engine.analyzer = type("A", (), {"reconfigure": lambda s, b: None})()
+    engine.sink = type("S", (), {
+        "conn": type("C", (), {"profile_set": lambda s, n: calls.append(n)})(),
+        "min_gap_ms": 0, "max_pulses_sec": 0, "max_duty": 0,
+    })()
+
+    engine.apply_profile(p2, switch_x1=False)
+    assert calls == [], "device call should have been skipped"
+
+    engine.profile = p1
+    engine.apply_profile(p2, switch_x1=True)
+    assert calls == ["two"]
+
+
 def test_min_gap_blocks_rapid_pulses():
     sink = HapticSink(min_gap_ms=100.0, max_pulses_sec=1000, max_duty=1.0, dry_run=True)
     now = time.perf_counter()

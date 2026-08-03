@@ -46,8 +46,15 @@ class X1Error(RuntimeError):
 class X1Connection:
     """A single reusable connection to the X1 command pipe.
 
-    Not thread-safe on its own -- HapticSink owns one and drives it from a
-    dedicated worker thread.
+    Thread-safe: every command is a write followed by a blocking read, so two
+    threads sharing one handle would interleave and each could consume the
+    other's response -- which deadlocks, because both then block forever waiting
+    for a reply that has already been read. A lock serialises whole round trips.
+
+    Being safe to share is not the same as being cheap to share. `Profile Set`
+    writes configuration to the mouse and takes far longer than a `vibrate`, so
+    callers must never issue commands from a UI thread; see EngineController,
+    which routes all device I/O through a dedicated worker.
     """
 
     def __init__(self, pipe: str = PIPE_V2, fallback: str | None = PIPE_LEGACY):
@@ -55,6 +62,7 @@ class X1Connection:
         self.fallback = fallback
         self._f = None
         self._active_pipe: str | None = None
+        self._lock = threading.RLock()
 
     @property
     def connected(self) -> bool:
@@ -65,33 +73,35 @@ class X1Connection:
         return self._active_pipe
 
     def connect(self) -> None:
-        if self._f is not None:
-            return
-        last: Exception | None = None
-        for name in (self.pipe, self.fallback):
-            if not name:
-                continue
-            try:
-                self._f = open(name, "r+b", buffering=0)
-                self._active_pipe = name
-                log.info("connected to X1 API at %s", name)
+        with self._lock:
+            if self._f is not None:
                 return
-            except OSError as e:
-                last = e
-        raise X1Error(
-            "Could not open the X1 API pipe. Check that the Swiftpoint X1 Control "
-            "Panel is running and that X1API=true is set in its settings.ini "
-            f"(then restart it). Last error: {last}"
-        )
+            last: Exception | None = None
+            for name in (self.pipe, self.fallback):
+                if not name:
+                    continue
+                try:
+                    self._f = open(name, "r+b", buffering=0)
+                    self._active_pipe = name
+                    log.info("connected to X1 API at %s", name)
+                    return
+                except OSError as e:
+                    last = e
+            raise X1Error(
+                "Could not open the X1 API pipe. Check that the Swiftpoint X1 Control "
+                "Panel is running and that X1API=true is set in its settings.ini "
+                f"(then restart it). Last error: {last}"
+            )
 
     def close(self) -> None:
-        if self._f is not None:
-            try:
-                self._f.close()
-            except OSError:
-                pass
-            self._f = None
-            self._active_pipe = None
+        with self._lock:
+            if self._f is not None:
+                try:
+                    self._f.close()
+                except OSError:
+                    pass
+                self._f = None
+                self._active_pipe = None
 
     def command(self, cmd: str, expect_response: bool = True) -> str:
         """Send one command and return its response.
@@ -99,17 +109,18 @@ class X1Connection:
         Responses are always read, even when the caller ignores them, so the
         server's write buffer cannot fill up over a long session.
         """
-        self.connect()
-        assert self._f is not None
-        try:
-            self._f.write((cmd + "\n").encode("utf-8"))
-            self._f.flush()
-            if not expect_response:
-                return ""
-            data = self._f.read(4096)
-        except OSError as e:
-            self.close()
-            raise X1Error(f"X1 API write/read failed: {e}") from e
+        with self._lock:
+            self.connect()
+            assert self._f is not None
+            try:
+                self._f.write((cmd + "\n").encode("utf-8"))
+                self._f.flush()
+                if not expect_response:
+                    return ""
+                data = self._f.read(4096)
+            except OSError as e:
+                self.close()
+                raise X1Error(f"X1 API write/read failed: {e}") from e
         return data.decode("utf-8", errors="replace").strip()
 
     # -- convenience wrappers over the documented command set -----------------

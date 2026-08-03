@@ -144,6 +144,63 @@ def test_controller_switches_profile(controller):
     assert controller.config.active_profile == target
 
 
+def test_profile_switch_does_not_block_the_gui_thread(controller, monkeypatch):
+    """Regression: switching profiles froze the window.
+
+    The Control Panel handoff writes configuration to the mouse and can take a
+    long time. It used to run inline on the GUI thread. It must now be handed to
+    the device worker, so set_profile returns immediately.
+    """
+    import threading
+    import time
+
+    slow_call_started = threading.Event()
+    released = threading.Event()
+
+    class SlowEngine:
+        def __init__(self):
+            self.profile = type("P", (), {"name": "before"})()
+
+        def apply_profile(self, profile, switch_x1=True):
+            assert switch_x1 is False, "GUI must not trigger the slow device call inline"
+            self.profile = profile
+
+        def switch_x1_profile(self, profile):
+            slow_call_started.set()
+            released.wait(timeout=5)
+
+    controller.engine = SlowEngine()
+    target = list(controller.profiles)[-1]
+
+    start = time.perf_counter()
+    controller.set_profile(target)
+    elapsed = time.perf_counter() - start
+
+    try:
+        assert elapsed < 0.5, f"set_profile blocked for {elapsed:.2f}s"
+        assert slow_call_started.wait(timeout=5), "device call never ran on the worker"
+    finally:
+        released.set()
+        controller.engine = None
+
+
+def test_test_pulse_returns_immediately(controller):
+    """Test pulses must not block the GUI either; the result arrives by signal."""
+    import time
+
+    received = []
+    controller.testResult.connect(received.append)
+
+    start = time.perf_counter()
+    controller.test_pulse(10, 5)
+    assert time.perf_counter() - start < 0.5
+
+
+def test_shutdown_is_safe_to_call_twice(controller):
+    controller.shutdown()
+    controller.shutdown()
+
+
 def test_controller_is_not_running_before_start(controller):
     assert controller.running is False
 

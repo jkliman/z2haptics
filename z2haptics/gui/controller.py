@@ -10,6 +10,7 @@ across thread boundaries.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
@@ -30,6 +31,9 @@ class EngineController(QObject):
     levelsUpdated = Signal(dict)               # band name -> (level, gate, is_open)
     profileChanged = Signal(str)
     errorRaised = Signal(str)
+    testResult = Signal(str)                   # response text from a test pulse
+    x1ProfilesLoaded = Signal(list)            # Control Panel profile names
+    apiStatus = Signal(bool, str)
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -37,11 +41,34 @@ class EngineController(QObject):
         self.profiles: dict[str, Profile] = {}
         self.engine: HapticEngine | None = None
 
+        # Every device command is a blocking pipe round trip, and `Profile Set`
+        # writes config to the mouse and can take a noticeable amount of time.
+        # Running any of that on the GUI thread freezes the window, so it all
+        # goes through one worker -- single-threaded so commands stay ordered.
+        self._devices = ThreadPoolExecutor(max_workers=1, thread_name_prefix="x1-cmd")
+
         self._poll = QTimer(self)
         self._poll.setInterval(100)
         self._poll.timeout.connect(self._emit_state)
 
         self.reload_profiles()
+
+    def shutdown(self) -> None:
+        self.stop()
+        self._devices.shutdown(wait=False, cancel_futures=True)
+
+    def _submit(self, fn, *args) -> None:
+        """Run a blocking device call on the worker, logging anything it raises."""
+        def wrapped():
+            try:
+                fn(*args)
+            except Exception:
+                log.exception("device command failed")
+
+        try:
+            self._devices.submit(wrapped)
+        except RuntimeError:
+            pass  # executor already shut down
 
     # -- profiles -------------------------------------------------------------
 
@@ -60,8 +87,15 @@ class EngineController(QObject):
             return
         self.config.active_profile = name
         self.config.save()
-        if self.engine is not None:
-            self.engine.apply_profile(profile)
+
+        engine = self.engine
+        if engine is not None:
+            # The in-memory swap is cheap, so do it inline for an instant switch.
+            # The Control Panel handoff writes to the mouse and must not block
+            # the GUI thread, so it goes to the worker.
+            engine.apply_profile(profile, switch_x1=False)
+            self._submit(engine.switch_x1_profile, profile)
+
         self.profileChanged.emit(name)
 
     def apply_live_edits(self, profile: Profile) -> None:
@@ -147,6 +181,13 @@ class EngineController(QObject):
         if engine is None:
             return
 
+        # Auto-switching happens inside the engine on its foreground-watch
+        # thread, so the GUI only finds out by noticing the change here.
+        if engine.profile.name != self.config.active_profile:
+            self.config.active_profile = engine.profile.name
+            self.config.save()
+            self.profileChanged.emit(engine.profile.name)
+
         stats = engine.stats
         sink = engine.sink.stats()
         self.statsUpdated.emit({
@@ -169,32 +210,52 @@ class EngineController(QObject):
 
     # -- one-off device commands ---------------------------------------------
 
-    def test_pulse(self, duration_ms: int, strength: int) -> str:
-        """Fire a pulse directly, bypassing the rate limiter.
+    def test_pulse(self, duration_ms: int, strength: int) -> None:
+        """Fire a pulse, bypassing the rate limiter.
 
         Used by the test panel, where the user explicitly asked for this exact
-        pulse and throttling it would be confusing.
+        pulse and throttling it would be confusing. Runs on the device worker;
+        the response arrives on `testResult`.
         """
+        self._submit(self._do_test_pulse, duration_ms, strength)
+
+    def _do_test_pulse(self, duration_ms: int, strength: int) -> None:
         try:
             if self.engine is not None:
-                return self.engine.sink.conn.vibrate(duration_ms, strength)
-            conn = X1Connection()
-            try:
-                return conn.vibrate(duration_ms, strength)
-            finally:
-                conn.close()
+                resp = self.engine.sink.conn.vibrate(duration_ms, strength)
+            else:
+                conn = X1Connection()
+                try:
+                    resp = conn.vibrate(duration_ms, strength)
+                finally:
+                    conn.close()
         except X1Error as e:
             self.errorRaised.emit(str(e))
-            return f"ERROR: {e}"
+            resp = f"ERROR: {e}"
+        self.testResult.emit(f"vibrate {duration_ms} {strength}  ->  {resp}")
 
-    def api_available(self) -> tuple[bool, str]:
+    def check_api(self) -> None:
+        """Probe the API on the worker; the answer arrives on `apiStatus`."""
+        self._submit(self._do_check_api)
+
+    def _do_check_api(self) -> None:
         try:
             conn = X1Connection()
             conn.connect()
             try:
                 active = conn.profile_get()
-                return True, f"Connected ({conn.active_pipe}); X1 profile: {active}"
+                pipe = conn.active_pipe
+                names = conn.profile_list()
             finally:
                 conn.close()
         except X1Error as e:
-            return False, str(e)
+            self.apiStatus.emit(False, str(e))
+            self.x1ProfilesLoaded.emit([])
+            return
+        except Exception as e:
+            self.apiStatus.emit(False, str(e))
+            self.x1ProfilesLoaded.emit([])
+            return
+
+        self.apiStatus.emit(True, f"Connected ({pipe}); X1 profile: {active}")
+        self.x1ProfilesLoaded.emit(names)

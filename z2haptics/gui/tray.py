@@ -141,6 +141,6 @@ class TrayIcon(QSystemTrayIcon):
         self.window.activateWindow()
 
     def _quit(self) -> None:
-        self.controller.stop()
+        self.controller.shutdown()
         self.hide()
         self.app.quit()
