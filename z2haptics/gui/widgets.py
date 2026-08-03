@@ -1,0 +1,244 @@
+"""Reusable widgets: live band meters and the per-band tuning editor."""
+
+from __future__ import annotations
+
+import math
+import time
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ..analysis import Band
+
+ACCENT = QColor(255, 212, 0)       # Swiftpoint yellow
+ACCENT_DIM = QColor(120, 100, 0)
+GATE_LINE = QColor(200, 90, 90)
+FLASH = QColor(255, 255, 255)
+
+
+class BandMeter(QWidget):
+    """A level bar for one band, with a gate marker and an onset flash.
+
+    Levels are drawn on a dB scale. Linear looks almost dead for quiet content
+    because band level is diluted across the band's bins, making it useless for
+    judging whether a gate is set sensibly -- which is the whole point of this
+    widget.
+    """
+
+    FLOOR_DB = -80.0
+
+    def __init__(self, band_name: str, parent=None):
+        super().__init__(parent)
+        self.band_name = band_name
+        self.level = 0.0
+        self.gate = 0.0
+        self.is_open = False
+        self._flash_until = 0.0
+        self._flash_strength = 0
+        self.setMinimumHeight(26)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_level(self, level: float, gate: float, is_open: bool) -> None:
+        self.level, self.gate, self.is_open = level, gate, is_open
+        self.update()
+
+    def flash(self, strength: int) -> None:
+        self._flash_until = time.time() + 0.22
+        self._flash_strength = strength
+        self.update()
+
+    @staticmethod
+    def _to_db(value: float) -> float:
+        return 20.0 * math.log10(max(value, 1e-9))
+
+    def _fraction(self, value: float) -> float:
+        db = self._to_db(value)
+        return max(0.0, min(1.0, (db - self.FLOOR_DB) / (0.0 - self.FLOOR_DB)))
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        w, h = self.width(), self.height()
+
+        bar_x, bar_w = 96, max(1, w - 96 - 52)
+        bar_y, bar_h = 5, h - 10
+
+        p.fillRect(0, 0, w, h, self.palette().window().color())
+        p.setPen(self.palette().text().color())
+        p.drawText(0, 0, 90, h, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   self.band_name)
+
+        track = self.palette().alternateBase().color()
+        p.fillRect(bar_x, bar_y, bar_w, bar_h, track)
+
+        filled = int(bar_w * self._fraction(self.level))
+        if filled > 0:
+            p.fillRect(bar_x, bar_y, filled, bar_h, ACCENT if self.is_open else ACCENT_DIM)
+
+        if self.gate > 0:
+            gx = bar_x + int(bar_w * self._fraction(self.gate))
+            p.setPen(QPen(GATE_LINE, 2))
+            p.drawLine(gx, bar_y - 1, gx, bar_y + bar_h + 1)
+
+        if time.time() < self._flash_until:
+            p.fillRect(bar_x, bar_y, bar_w, bar_h, QColor(255, 255, 255, 60))
+            p.setPen(FLASH)
+            p.drawText(bar_x + bar_w + 6, 0, 46, h,
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                       f"{self._flash_strength}")
+        else:
+            p.setPen(self.palette().mid().color())
+            p.drawText(bar_x + bar_w + 6, 0, 46, h,
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                       f"{self._to_db(self.level):.0f}dB")
+        p.end()
+
+
+class BandEditor(QGroupBox):
+    """Editor for one band. Emits `changed` whenever any field is edited."""
+
+    changed = Signal()
+    removed = Signal(object)
+
+    def __init__(self, band: Band, parent=None):
+        super().__init__(band.name, parent)
+        self.band = band
+        self.setCheckable(True)
+        self.setChecked(band.enabled)
+
+        outer = QVBoxLayout(self)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self._suspend = True
+
+        # -- frequency range
+        row = QHBoxLayout()
+        self.low = QDoubleSpinBox(); self.low.setRange(10, 20000); self.low.setSuffix(" Hz")
+        self.high = QDoubleSpinBox(); self.high.setRange(10, 22000); self.high.setSuffix(" Hz")
+        self.low.setValue(band.low_hz); self.high.setValue(band.high_hz)
+        row.addWidget(self.low); row.addWidget(QLabel("to")); row.addWidget(self.high)
+        form.addRow("Frequency", self._wrap(row))
+
+        # -- detection
+        self.sensitivity = QDoubleSpinBox()
+        self.sensitivity.setRange(1.0, 10.0); self.sensitivity.setSingleStep(0.05)
+        self.sensitivity.setValue(band.sensitivity)
+        self.sensitivity.setToolTip(
+            "Flux must exceed this multiple of the rolling median to count as an "
+            "onset. Higher = fewer, more certain detections.")
+        form.addRow("Sensitivity", self.sensitivity)
+
+        self.gate = QDoubleSpinBox()
+        self.gate.setRange(0.0, 1.0); self.gate.setDecimals(5)
+        self.gate.setSingleStep(0.0005); self.gate.setValue(band.gate)
+        self.gate.setToolTip("Absolute level floor. Below this the band is treated as silent.")
+        form.addRow("Gate", self.gate)
+
+        self.refractory = QDoubleSpinBox()
+        self.refractory.setRange(0, 2000); self.refractory.setSuffix(" ms")
+        self.refractory.setValue(band.refractory_ms)
+        self.refractory.setToolTip("Minimum spacing between onsets in this band.")
+        form.addRow("Refractory", self.refractory)
+
+        self.min_share = QDoubleSpinBox()
+        self.min_share.setRange(0.0, 1.0); self.min_share.setSingleStep(0.05)
+        self.min_share.setValue(band.min_share)
+        self.min_share.setToolTip(
+            "Minimum share of the frame's total flux. Raise this if a sharp sound "
+            "elsewhere keeps falsely triggering this band. 0 disables the check.")
+        form.addRow("Min share", self.min_share)
+
+        # -- pulse shaping
+        self.duration = QSpinBox()
+        self.duration.setRange(1, 2000); self.duration.setSuffix(" ms")
+        self.duration.setValue(band.duration_ms)
+        self.duration.setToolTip("How long the motor runs for this band's pulses.")
+        form.addRow("Duration", self.duration)
+
+        row = QHBoxLayout()
+        self.smin = QSpinBox(); self.smin.setRange(0, 100); self.smin.setValue(band.strength_min)
+        self.smax = QSpinBox(); self.smax.setRange(0, 100); self.smax.setValue(band.strength_max)
+        row.addWidget(self.smin); row.addWidget(QLabel("to")); row.addWidget(self.smax)
+        form.addRow("Strength", self._wrap(row))
+
+        row = QHBoxLayout()
+        self.floor_db = QDoubleSpinBox()
+        self.floor_db.setRange(-140, 0); self.floor_db.setSuffix(" dB")
+        self.floor_db.setValue(band.level_floor_db)
+        self.ceil_db = QDoubleSpinBox()
+        self.ceil_db.setRange(-140, 0); self.ceil_db.setSuffix(" dB")
+        self.ceil_db.setValue(band.level_ceil_db)
+        row.addWidget(self.floor_db); row.addWidget(QLabel("to")); row.addWidget(self.ceil_db)
+        w = self._wrap(row)
+        w.setToolTip(
+            "Loudness window mapped onto the strength range. A quiet event at the "
+            "floor pulses at minimum strength; one at the ceiling pulses at maximum. "
+            "Widen it if everything feels the same.")
+        form.addRow("Loudness window", w)
+
+        self.priority = QSpinBox()
+        self.priority.setRange(0, 10); self.priority.setValue(band.priority)
+        self.priority.setToolTip(
+            "Nudges which band wins when several fire together. Deliberately only a "
+            "thumb on the scale -- it cannot override a much stronger detection.")
+        form.addRow("Priority", self.priority)
+
+        outer.addLayout(form)
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        remove = QPushButton("Remove band")
+        remove.clicked.connect(lambda: self.removed.emit(self))
+        btns.addWidget(remove)
+        outer.addLayout(btns)
+
+        for widget in (self.low, self.high, self.sensitivity, self.gate, self.refractory,
+                       self.min_share, self.duration, self.smin, self.smax,
+                       self.floor_db, self.ceil_db, self.priority):
+            widget.valueChanged.connect(self._on_change)
+        self.toggled.connect(self._on_change)
+
+        self._suspend = False
+
+    @staticmethod
+    def _wrap(layout) -> QWidget:
+        w = QWidget()
+        layout.setContentsMargins(0, 0, 0, 0)
+        w.setLayout(layout)
+        return w
+
+    def _on_change(self, *_) -> None:
+        if self._suspend:
+            return
+        self.apply_to_band()
+        self.changed.emit()
+
+    def apply_to_band(self) -> None:
+        b = self.band
+        b.low_hz = self.low.value()
+        b.high_hz = max(self.high.value(), self.low.value() + 1)
+        b.sensitivity = self.sensitivity.value()
+        b.gate = self.gate.value()
+        b.refractory_ms = self.refractory.value()
+        b.min_share = self.min_share.value()
+        b.duration_ms = self.duration.value()
+        b.strength_min = min(self.smin.value(), self.smax.value())
+        b.strength_max = max(self.smin.value(), self.smax.value())
+        b.level_floor_db = min(self.floor_db.value(), self.ceil_db.value())
+        b.level_ceil_db = max(self.floor_db.value(), self.ceil_db.value())
+        b.priority = self.priority.value()
+        b.enabled = self.isChecked()

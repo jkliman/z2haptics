@@ -16,13 +16,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+gui = ["PySide6>=6.6"]
+dev = ["pytest>=7.0", "PySide6>=6.6"]
 
 [project.scripts]
 z2haptics = "z2haptics.cli:main"
 
+[project.gui-scripts]
+z2haptics-gui = "z2haptics.gui.app:main"
+
 [tool.setuptools]
-packages = ["z2haptics"]
+packages = ["z2haptics", "z2haptics.gui"]
 
 [tool.setuptools.package-data]
 z2haptics = ["../profiles/*.yaml"]

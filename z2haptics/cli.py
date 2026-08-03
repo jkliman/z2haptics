@@ -309,6 +309,15 @@ def cmd_monitor(args) -> int:
     return 0
 
 
+def cmd_gui(args) -> int:
+    try:
+        from .gui.app import main as gui_main
+    except ImportError as e:
+        print(f"The GUI needs PySide6: pip install PySide6\n({e})", file=sys.stderr)
+        return 1
+    return gui_main(["--minimised"] if args.minimised else [])
+
+
 def cmd_run(args) -> int:
     profiles = _load_profiles(args)
     profile = _pick_profile(profiles, args.profile)
@@ -399,6 +408,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-auto-switch", action="store_true",
                    help="stay on one profile instead of following the foreground app")
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("gui", help="run the system tray app")
+    p.add_argument("--minimised", "--minimized", action="store_true", dest="minimised",
+                   help="start hidden in the tray")
+    p.set_defaults(func=cmd_gui)
 
     learn_cli.register(sub)
 

@@ -78,7 +78,43 @@ Feel it working:
 python -m z2haptics.cli test
 ```
 
-## Usage
+## The tray app
+
+```bash
+pip install PySide6
+python -m z2haptics.gui
+```
+
+Runs in the system tray. Left-click or **Settings…** opens the window; closing it
+hides back to the tray rather than quitting.
+
+**Status** — live band meters showing level, gate marker and an onset flash per
+hit, plus counters for onsets, pulses sent and rate-limited drops. This is the
+fastest way to see whether a gate is set sensibly: a band that never crosses its
+gate can never trigger, and one that sits above it constantly will fire on
+everything.
+
+**Profile** — full tuning UI. Every band's frequency range, sensitivity, gate,
+refractory, pulse duration, strength range, loudness window and priority, plus
+master strength and the motor limits. **Edits apply live** to the running engine,
+so you can tune while a game plays and feel the change immediately. Save writes
+to `~/.z2haptics/profiles/` rather than overwriting the shipped profile.
+
+**Audio** — pick which output to capture. If you use a virtual mixer (Wave Link,
+VoiceMeeter), choose the device carrying game audio.
+
+**Test** — strength and duration sliders with a Fire button, plus presets (light
+tick, gunshot, explosion, long rumble), a 5-shot burst and a strength ramp. These
+bypass the rate limiter, since you asked for that exact pulse.
+
+**General** — auto profile switching, start with Windows, start minimised, and an
+X1 API status check with a one-click enable.
+
+```bash
+python -m z2haptics.gui --minimised     # what the autostart entry uses
+```
+
+## Command line
 
 ```bash
 python -m z2haptics.cli run                  # match profile to foreground app
@@ -199,7 +235,7 @@ transient still lands during a busy passage.
 ## Development
 
 ```bash
-python -m pytest tests -q                    # 44 tests
+python -m pytest tests -q                    # 64 tests
 python tools/probe_timing.py                 # measure API latency
 python tools/selftest_engine.py --profile FPS  # end-to-end detection check
 python tools/make_demo_session.py            # synthetic session for `analyze`
@@ -217,7 +253,8 @@ python tools/make_demo_session.py            # synthetic session for `analyze`
 | `z2haptics/analysis.py` | FFT band split, onset detection |
 | `z2haptics/engine.py` | orchestration, winner selection, pulse shaping |
 | `z2haptics/learn.py` | event capture and spectral profiling |
-| `z2haptics/profiles.py` | profile loading |
+| `z2haptics/profiles.py` | profile loading and saving |
+| `z2haptics/gui/` | tray icon, settings window, live meters |
 | `docs/PROTOCOL.md` | the reverse-engineered API |
 
 ## Licence

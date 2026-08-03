@@ -89,6 +89,60 @@ def load_profile(path: Path) -> Profile:
     return profile
 
 
+def profile_to_dict(p: Profile) -> dict:
+    """Serialise a Profile back to the YAML document shape."""
+    return {
+        "name": p.name,
+        "description": p.description,
+        "processes": list(p.processes),
+        **({"x1_profile": p.x1_profile} if p.x1_profile else {}),
+        "strength_scale": round(p.strength_scale, 3),
+        "limits": {
+            "min_gap_ms": round(p.limits.min_gap_ms, 1),
+            "max_pulses_sec": round(p.limits.max_pulses_sec, 1),
+            "max_duty": round(p.limits.max_duty, 3),
+        },
+        "bands": [
+            {
+                "name": b.name,
+                "low_hz": round(b.low_hz, 1),
+                "high_hz": round(b.high_hz, 1),
+                "sensitivity": round(b.sensitivity, 3),
+                "gate": round(b.gate, 6),
+                "refractory_ms": round(b.refractory_ms, 1),
+                "min_share": round(b.min_share, 3),
+                "duration_ms": int(b.duration_ms),
+                "strength_min": int(b.strength_min),
+                "strength_max": int(b.strength_max),
+                "level_floor_db": round(b.level_floor_db, 1),
+                "level_ceil_db": round(b.level_ceil_db, 1),
+                "priority": int(b.priority),
+                "enabled": bool(b.enabled),
+            }
+            for b in p.bands
+        ],
+    }
+
+
+def save_profile(p: Profile, path: Path | None = None) -> Path:
+    """Write a profile to YAML.
+
+    Defaults to the user profile directory rather than overwriting a shipped
+    profile in the repo, so edits made in the GUI survive an update and the
+    originals stay intact. `discover()` gives user profiles precedence.
+    """
+    if path is None:
+        USER_DIR.mkdir(parents=True, exist_ok=True)
+        safe = "".join(c if c.isalnum() or c in " -_" else "_" for c in p.name)
+        path = USER_DIR / f"{safe.strip().replace(' ', '_').lower()}.yaml"
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(profile_to_dict(p), f, sort_keys=False, allow_unicode=True)
+    p.source = path
+    return path
+
+
 def discover(extra_dirs: list[Path] | None = None) -> dict[str, Profile]:
     """Load every profile from the builtin and user directories.
 
