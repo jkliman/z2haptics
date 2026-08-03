@@ -1,0 +1,61 @@
+﻿name: Icarus
+description: >
+  Survival/crafting tuning. Gunfire is sparse, so the emphasis moves to the
+  repetitive tool and resource-gathering sounds -- chopping, mining, hammering --
+  which sit in the low-mids. Sensitivity is higher and pulses are shorter, since
+  these are frequent light events rather than occasional heavy ones.
+
+processes:
+  - Icarus.exe
+  - IcarusClient-Win64-Shipping.exe
+
+x1_profile: Icarus
+
+strength_scale: 0.9
+
+limits:
+  min_gap_ms: 55
+  max_pulses_sec: 12
+  max_duty: 0.45
+
+bands:
+  # Storms, creature stomps, falling trees.
+  - name: impact
+    low_hz: 25
+    high_hz: 100
+    sensitivity: 1.7
+    gate: 0.0035
+    refractory_ms: 130
+    duration_ms: 85
+    strength_min: 45
+    strength_max: 95
+    level_floor_db: -49.1
+    level_ceil_db: -23.1
+    priority: 3
+
+  # Tool work: axe on wood, pick on stone. The band that carries this profile.
+  - name: tools
+    low_hz: 100
+    high_hz: 900
+    sensitivity: 1.7
+    gate: 0.0028
+    refractory_ms: 90
+    duration_ms: 38
+    strength_min: 32
+    strength_max: 72
+    level_floor_db: -51.1
+    level_ceil_db: -25.1
+    priority: 2
+
+  - name: detail
+    low_hz: 3000
+    high_hz: 9000
+    sensitivity: 2.3
+    gate: 0.0020
+    refractory_ms: 150
+    duration_ms: 18
+    strength_min: 18
+    strength_max: 42
+    level_floor_db: -54.0
+    level_ceil_db: -28.0
+    priority: 1

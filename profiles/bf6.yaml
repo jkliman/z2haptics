@@ -1,0 +1,65 @@
+﻿name: Battlefield 6
+description: >
+  Battlefield leans on a dense low end -- tank fire, collapsing buildings, distant
+  artillery -- so the impact band runs hotter and longer than the generic FPS
+  profile, and the pulse ceiling is raised to keep up with sustained firefights.
+
+  Ties into the existing "bf6" Swiftpoint profile via x1_profile below, so the
+  Control Panel switches its button mappings at the same time.
+
+processes:
+  - bf6.exe
+  - bf.exe
+  - bf2042.exe
+
+x1_profile: bf6
+
+strength_scale: 1.05
+
+limits:
+  min_gap_ms: 40
+  max_pulses_sec: 17
+  max_duty: 0.60
+
+bands:
+  # Armour, explosives, destruction. Long and heavy.
+  - name: impact
+    low_hz: 20
+    high_hz: 85
+    sensitivity: 1.45
+    gate: 0.0040
+    refractory_ms: 100
+    duration_ms: 110
+    strength_min: 60
+    strength_max: 100
+    level_floor_db: -48.0
+    level_ceil_db: -22.0
+    priority: 3
+
+  # Small arms. Slightly wider than the generic profile to catch the heavier
+  # weapon classes without bleeding into the impact band.
+  - name: gunfire
+    low_hz: 85
+    high_hz: 500
+    sensitivity: 1.55
+    gate: 0.0030
+    refractory_ms: 65
+    duration_ms: 42
+    strength_min: 38
+    strength_max: 82
+    level_floor_db: -50.5
+    level_ceil_db: -24.5
+    priority: 2
+
+  - name: crack
+    low_hz: 2200
+    high_hz: 7000
+    sensitivity: 2.0
+    gate: 0.0022
+    refractory_ms: 120
+    duration_ms: 20
+    strength_min: 20
+    strength_max: 48
+    level_floor_db: -53.2
+    level_ceil_db: -27.2
+    priority: 1

@@ -1,0 +1,65 @@
+﻿name: Racing
+description: >
+  Sim racing tuning. Engine note is continuous, so a naive detector would fire
+  constantly -- the low band is therefore deliberately insensitive and gated
+  high, leaving it to react to gear changes and impacts rather than steady revs.
+  Kerbs and surface texture come through the mid band instead.
+
+processes:
+  - iRacingSim64DX11.exe
+  - AC2-Win64-Shipping.exe
+  - acs.exe
+  - F1_24.exe
+  - Forza.exe
+  - ForzaHorizon5.exe
+  - DirtRally2.exe
+
+strength_scale: 0.95
+
+limits:
+  min_gap_ms: 60
+  max_pulses_sec: 11
+  max_duty: 0.45
+
+bands:
+  # Collisions and gear-change thumps. Gated high so steady engine tone is ignored.
+  - name: impact
+    low_hz: 25
+    high_hz: 120
+    sensitivity: 2.4
+    gate: 0.0060
+    refractory_ms: 150
+    duration_ms: 90
+    strength_min: 50
+    strength_max: 100
+    level_floor_db: -44.4
+    level_ceil_db: -18.4
+    priority: 3
+
+  # Kerbs, rumble strips, surface transitions.
+  - name: surface
+    low_hz: 700
+    high_hz: 3500
+    sensitivity: 1.8
+    gate: 0.0030
+    refractory_ms: 85
+    duration_ms: 35
+    strength_min: 28
+    strength_max: 68
+    level_floor_db: -50.5
+    level_ceil_db: -24.5
+    priority: 2
+
+  # Tyre scrub / lock-up squeal as a light warning accent.
+  - name: scrub
+    low_hz: 3500
+    high_hz: 9000
+    sensitivity: 2.2
+    gate: 0.0028
+    refractory_ms: 200
+    duration_ms: 25
+    strength_min: 20
+    strength_max: 45
+    level_floor_db: -51.1
+    level_ceil_db: -25.1
+    priority: 1

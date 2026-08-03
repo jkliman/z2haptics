@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "z2haptics"
+version = "0.1.0"
+description = "Audio-driven haptic feedback for the Swiftpoint Z2 mouse"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.24",
+    "soundcard>=0.4.3",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+z2haptics = "z2haptics.cli:main"
+
+[tool.setuptools]
+packages = ["z2haptics"]
+
+[tool.setuptools.package-data]
+z2haptics = ["../profiles/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

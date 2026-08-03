@@ -1,0 +1,64 @@
+﻿name: FPS
+description: >
+  Generic shooter tuning. Three bands separate the things that actually want to
+  feel different: the low thump of explosions, the mid-range body of a weapon
+  report, and the high crack of a near miss.
+
+processes:
+  - cs2.exe
+  - r5apex.exe
+  - VALORANT-Win64-Shipping.exe
+  - RainbowSix.exe
+  - ModernWarfare.exe
+  - DOOMEternalx64vk.exe
+
+strength_scale: 1.0
+
+limits:
+  min_gap_ms: 45
+  max_pulses_sec: 15
+  max_duty: 0.55
+
+bands:
+  # Explosions, grenades, vehicle booms. Highest priority: when an explosion and
+  # a gunshot land on the same frame, the explosion is the event you want to feel.
+  - name: impact
+    low_hz: 20
+    high_hz: 90
+    sensitivity: 1.5
+    gate: 0.0035
+    refractory_ms: 110
+    duration_ms: 95
+    strength_min: 55
+    strength_max: 100
+    level_floor_db: -49.1
+    level_ceil_db: -23.1
+    priority: 3
+
+  # Weapon report body. The workhorse band -- most pulses come from here.
+  - name: gunfire
+    low_hz: 90
+    high_hz: 450
+    sensitivity: 1.6
+    gate: 0.0030
+    refractory_ms: 75
+    duration_ms: 45
+    strength_min: 35
+    strength_max: 80
+    level_floor_db: -50.5
+    level_ceil_db: -24.5
+    priority: 2
+
+  # Supersonic cracks and close whizz-by. Short and light -- an accent, not a hit.
+  - name: crack
+    low_hz: 2000
+    high_hz: 6500
+    sensitivity: 2.1
+    gate: 0.0020
+    refractory_ms: 130
+    duration_ms: 22
+    strength_min: 22
+    strength_max: 50
+    level_floor_db: -54.0
+    level_ceil_db: -28.0
+    priority: 1

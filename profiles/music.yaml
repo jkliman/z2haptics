@@ -1,0 +1,56 @@
+﻿name: Music
+description: >
+  Beat-follower for music playback. Bands are placed on kick, snare and hat
+  rather than on game events. Useful mainly as a tuning reference: put on a track
+  with a clear beat and you can see and feel whether detection is tracking.
+
+processes:
+  - Spotify.exe
+  - foobar2000.exe
+
+strength_scale: 0.8
+
+limits:
+  min_gap_ms: 55
+  max_pulses_sec: 13
+  max_duty: 0.45
+
+bands:
+  - name: kick
+    low_hz: 40
+    high_hz: 110
+    sensitivity: 1.5
+    gate: 0.0035
+    refractory_ms: 110
+    duration_ms: 60
+    strength_min: 45
+    strength_max: 95
+    level_floor_db: -49.1
+    level_ceil_db: -23.1
+    priority: 3
+
+  - name: snare
+    low_hz: 150
+    high_hz: 400
+    sensitivity: 1.7
+    gate: 0.0030
+    refractory_ms: 120
+    duration_ms: 35
+    strength_min: 30
+    strength_max: 70
+    level_floor_db: -50.5
+    level_ceil_db: -24.5
+    priority: 2
+
+  - name: hat
+    low_hz: 6000
+    high_hz: 12000
+    sensitivity: 2.2
+    gate: 0.0020
+    refractory_ms: 140
+    duration_ms: 16
+    strength_min: 15
+    strength_max: 38
+    level_floor_db: -54.0
+    level_ceil_db: -28.0
+    priority: 1

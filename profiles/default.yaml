@@ -1,0 +1,42 @@
+﻿name: Default
+description: >
+  General-purpose fallback. Conservative sensitivity and a low pulse ceiling so
+  it stays unobtrusive on the desktop and during video playback.
+
+# No `processes:` list -- this profile is never auto-matched, only used as the
+# explicit fallback when nothing else claims the foreground window.
+processes: []
+
+strength_scale: 0.85
+
+limits:
+  min_gap_ms: 70
+  max_pulses_sec: 9
+  max_duty: 0.35
+
+bands:
+  - name: impact
+    low_hz: 25
+    high_hz: 110
+    sensitivity: 1.9
+    gate: 0.0030
+    refractory_ms: 140
+    duration_ms: 70
+    strength_min: 35
+    strength_max: 90
+    level_floor_db: -50.5
+    level_ceil_db: -24.5
+    priority: 3
+
+  - name: body
+    low_hz: 110
+    high_hz: 600
+    sensitivity: 2.2
+    gate: 0.0025
+    refractory_ms: 160
+    duration_ms: 40
+    strength_min: 25
+    strength_max: 65
+    level_floor_db: -52.0
+    level_ceil_db: -26.0
+    priority: 1
