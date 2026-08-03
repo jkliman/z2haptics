@@ -43,6 +43,42 @@ class Band:
     refractory_ms: float = 90.0   # minimum spacing between onsets in this band
     min_share: float = 0.0        # min fraction of the frame's total flux (0 = off)
 
+    # How much of the slowly-adapting background spectrum to remove before
+    # measuring this band. 0 = off, 1.0 = full subtraction.
+    #
+    # This is what stops music and other sustained content from masking
+    # transients. Steady sound is learned into the background and removed, so a
+    # gunshot is measured against near-silence instead of against the music. The
+    # detection threshold is a rolling median of flux, so without this, loud
+    # continuous audio raises the very bar the gunshot has to clear.
+    background_subtraction: float = 0.0
+
+    # Cap on how often this band may win a frame, in pulses/sec. 0 = unlimited.
+    # The motor is a single actuator, so a constantly-firing band would otherwise
+    # monopolise it and starve rarer, more informative events.
+    max_rate: float = 0.0
+
+    # Minimum spectral flatness (geometric mean / arithmetic mean of the band
+    # spectrum) required to accept an onset. 0 = off.
+    #
+    # This is the strongest tool against music. Noise-like content -- gunfire,
+    # explosions, impacts -- is spectrally flat; played notes concentrate their
+    # energy into a few harmonics and are not. Measured on real material:
+    # gunshot frames sit around 0.90, music frames around 0.11, so a threshold
+    # near 0.35 keeps essentially every gunshot while rejecting most music.
+    #
+    # Leave at 0 for bands that should respond to tonal content (a music
+    # profile's kick/snare bands, engine note in a racing profile).
+    #
+    # Known limitation: flatness is measured on the onset frame, and the attack
+    # of *any* sound starting from near-silence is a discontinuity, which reads
+    # as broadband. A tone rising out of silence therefore measures ~0.89 on its
+    # first frame even though its steady state is ~0.07. The filter discriminates
+    # within continuous material -- which is the case that matters, since a
+    # dense game mix is exactly that -- but it will not reject an isolated tone
+    # burst in an otherwise silent scene.
+    min_flatness: float = 0.0
+
     # Pulse shaping. Strength comes from how LOUD the event is, measured in dB
     # against this band's own window, not from how far the flux overshot its
     # threshold. Overshoot is near-useless as a strength signal: the adaptive
@@ -74,6 +110,7 @@ class Onset:
     flux: float
     threshold: float
     share: float           # this band's fraction of the frame's total flux
+    flatness: float        # spectral flatness; ~1 = noise-like, ~0 = tonal
 
 
 @dataclass
@@ -86,6 +123,7 @@ class BandState:
     level: float = 0.0
     last_flux: float = 0.0
     last_threshold: float = 0.0
+    last_flatness: float = 0.0
 
 
 class BandAnalyzer:
@@ -102,6 +140,8 @@ class BandAnalyzer:
         samplerate: int = 48000,
         frame_size: int = 2048,
         hop_size: int = 512,
+        background_tau_up: float = 2.0,
+        background_tau_down: float = 0.4,
     ):
         self.bands = bands
         self.samplerate = samplerate
@@ -116,6 +156,15 @@ class BandAnalyzer:
         self._filled = 0
         self._state = {b.name: BandState() for b in bands}
         self._clock = 0.0  # seconds of audio consumed
+
+        # Per-bin estimate of the steady background. Asymmetric on purpose: it
+        # rises slowly so a transient cannot inflate the very floor it is being
+        # measured against, and falls faster so the estimate recovers promptly
+        # when loud content stops.
+        hop_seconds = hop_size / samplerate
+        self._bg_up = float(np.exp(-hop_seconds / max(background_tau_up, 1e-6)))
+        self._bg_down = float(np.exp(-hop_seconds / max(background_tau_down, 1e-6)))
+        self._background: np.ndarray | None = None
 
     @property
     def state(self) -> dict[str, BandState]:
@@ -151,6 +200,37 @@ class BandAnalyzer:
 
         return onsets
 
+    def _band_slice(self, spectrum: np.ndarray, band: Band) -> np.ndarray:
+        """This band's spectrum, with the steady background optionally removed."""
+        lo, hi = self._bin_ranges[band.name]
+        slice_ = spectrum[lo:hi]
+        if band.background_subtraction <= 0.0 or self._background is None:
+            return slice_
+        floor = self._background[lo:hi] * band.background_subtraction
+        return np.maximum(slice_ - floor, 0.0)
+
+    @staticmethod
+    def _flatness(mag: np.ndarray) -> float:
+        """Geometric mean over arithmetic mean. 1.0 = white noise, ->0 = pure tone.
+
+        Computed on the raw spectrum, never the background-subtracted residual.
+        Subtracting a tonal background leaves low-level noise, which reads as
+        highly flat -- so measuring the residual would make music look exactly
+        like the broadband events we are trying to isolate.
+        """
+        if mag.size == 0:
+            return 0.0
+        m = np.maximum(mag, 1e-12)
+        return float(np.exp(np.mean(np.log(m))) / np.mean(m))
+
+    def _update_background(self, spectrum: np.ndarray) -> None:
+        if self._background is None:
+            self._background = spectrum.copy()
+            return
+        rising = spectrum > self._background
+        coeff = np.where(rising, self._bg_up, self._bg_down)
+        self._background = coeff * self._background + (1.0 - coeff) * spectrum
+
     def _analyze_frame(self) -> list[Onset]:
         spectrum = np.abs(np.fft.rfft(self._buf * self.window))
         onsets: list[Onset] = []
@@ -158,25 +238,33 @@ class BandAnalyzer:
         # First pass: flux per band, so `min_share` can compare each band against
         # the frame total and reject energy that merely leaked in from elsewhere.
         fluxes: dict[str, float] = {}
+        slices: dict[str, np.ndarray] = {}
         for band in self.bands:
             if not band.enabled:
                 continue
-            lo, hi = self._bin_ranges[band.name]
-            slice_ = spectrum[lo:hi]
+            slice_ = self._band_slice(spectrum, band)
+            slices[band.name] = slice_
             if slice_.size == 0:
                 fluxes[band.name] = 0.0
                 continue
             fluxes[band.name] = max(0.0, float(slice_.sum()) - self._state[band.name].prev_energy)
         total_flux = sum(fluxes.values()) or 1e-12
 
+        # Update after measuring, so this frame is judged against the background
+        # as it stood *before* the event arrived.
+        self._update_background(spectrum)
+
         for band in self.bands:
             if not band.enabled:
                 continue
             st = self._state[band.name]
-            lo, hi = self._bin_ranges[band.name]
-            slice_ = spectrum[lo:hi]
+            slice_ = slices[band.name]
             if slice_.size == 0:
                 continue
+
+            lo, hi = self._bin_ranges[band.name]
+            flatness = self._flatness(spectrum[lo:hi])
+            st.last_flatness = flatness
 
             energy = float(slice_.sum())
             # Band RMS, normalised by bin count so bands of different widths
@@ -187,10 +275,23 @@ class BandAnalyzer:
             st.prev_energy = energy
             st.last_flux = flux
 
+            # Adaptive threshold: mean plus `sensitivity` standard deviations of
+            # recent flux.
+            #
+            # This was previously median * sensitivity, which was inert. Flux is
+            # max(0, energy - prev_energy), so about half of all frames are
+            # exactly zero and the median sits at zero too -- the threshold then
+            # collapsed to the 1e-9 floor and `sensitivity` had no measurable
+            # effect at any value from 1.5 to 5.0. Every scrap of positive flux
+            # became an onset, which is what buried real events under music.
+            #
+            # Mean and standard deviation both survive a zero-heavy
+            # distribution, so the knob does something now: sensitivity reads as
+            # "how many deviations above typical", and 2-4 is a sane range.
             hist = st.flux_history
             if len(hist) >= 8:
-                median = float(np.median(hist))
-                threshold = max(median * band.sensitivity, 1e-9)
+                arr = np.asarray(hist, dtype=np.float64)
+                threshold = max(float(arr.mean() + band.sensitivity * arr.std()), 1e-9)
             else:
                 threshold = float("inf")  # still learning the floor
             st.last_threshold = threshold
@@ -205,6 +306,8 @@ class BandAnalyzer:
 
             share = flux / total_flux
             if band.min_share > 0.0 and share < band.min_share:
+                continue
+            if band.min_flatness > 0.0 and flatness < band.min_flatness:
                 continue
 
             st.last_onset_s = self._clock
@@ -223,6 +326,7 @@ class BandAnalyzer:
                     flux=flux,
                     threshold=threshold,
                     share=float(share),
+                    flatness=float(flatness),
                 )
             )
 

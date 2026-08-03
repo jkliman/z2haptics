@@ -37,6 +37,22 @@ PRIORITY_WEIGHT = 0.05
 
 
 @dataclass
+class BandStats:
+    """Per-band accounting, so it is visible *where* an event was lost.
+
+    "Gunshots do not come through" has three very different causes -- never
+    detected, detected but outranked, or detected and rate-limited -- and they
+    need opposite fixes. Counting each separately makes that answerable.
+    """
+
+    detected: int = 0      # onsets the analyzer reported
+    won: int = 0           # frames this band won
+    lost: int = 0          # detected but another band won the frame
+    capped: int = 0        # excluded because the band hit its own max_rate
+    queued: int = 0        # pulses accepted by the sink
+
+
+@dataclass
 class EngineStats:
     onsets: int = 0
     pulses: int = 0
@@ -44,6 +60,13 @@ class EngineStats:
     profile_switches: int = 0
     started_at: float = field(default_factory=time.time)
     last_onsets: list = field(default_factory=list)  # recent (band, strength) for the UI
+    bands: dict = field(default_factory=dict)        # band name -> BandStats
+
+    def band(self, name: str) -> BandStats:
+        stats = self.bands.get(name)
+        if stats is None:
+            stats = self.bands[name] = BandStats()
+        return stats
 
 
 class HapticEngine:
@@ -95,6 +118,7 @@ class HapticEngine:
         self._stop = threading.Event()
         self._watch_thread: threading.Thread | None = None
         self._current_process = ""
+        self._band_wins: dict[str, list[float]] = {}   # band -> recent win timestamps
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -168,6 +192,17 @@ class HapticEngine:
                     self.apply_profile(target)
             self._stop.wait(1.0)
 
+    def _band_rate_exceeded(self, band, now: float) -> bool:
+        """Has this band already used up its own pulses-per-second allowance?"""
+        if band.max_rate <= 0:
+            return False
+        wins = self._band_wins.get(band.name)
+        if not wins:
+            return False
+        cutoff = now - 1.0
+        wins[:] = [t for t in wins if t >= cutoff]
+        return len(wins) >= band.max_rate
+
     # -- hot path -------------------------------------------------------------
 
     def _on_audio(self, mono: np.ndarray) -> None:
@@ -180,6 +215,27 @@ class HapticEngine:
             bands = {b.name: b for b in profile.bands}
 
         self.stats.onsets += len(onsets)
+        for onset in onsets:
+            self.stats.band(onset.band).detected += 1
+
+        # A band that has hit its own max_rate is excluded from the running. The
+        # motor is one actuator, so without this a constantly-firing band (an
+        # explosion-heavy low band, a musical bassline) wins every contested
+        # frame and starves rarer events that carry more information. Excluding
+        # it hands the frame to the next band rather than dropping the frame.
+        now = time.perf_counter()
+        eligible = []
+        for onset in onsets:
+            band = bands.get(onset.band)
+            if band is None:
+                continue
+            if self._band_rate_exceeded(band, now):
+                self.stats.band(onset.band).capped += 1
+                continue
+            eligible.append(onset)
+
+        if not eligible:
+            return
 
         # One actuator, so pick a single winner per frame.
         #
@@ -193,13 +249,19 @@ class HapticEngine:
             band = bands.get(o.band)
             return o.strength + PRIORITY_WEIGHT * (band.priority if band else 0)
 
-        ranked = sorted(onsets, key=score, reverse=True)
+        ranked = sorted(eligible, key=score, reverse=True)
         winner = ranked[0]
         self.stats.suppressed_stacking += len(ranked) - 1
+
+        self.stats.band(winner.band).won += 1
+        for onset in ranked[1:]:
+            self.stats.band(onset.band).lost += 1
 
         band = bands.get(winner.band)
         if band is None:
             return
+
+        self._band_wins.setdefault(winner.band, []).append(now)
 
         span = band.strength_max - band.strength_min
         strength = band.strength_min + winner.strength * span
@@ -216,6 +278,7 @@ class HapticEngine:
         )
         if self.sink.fire(pulse):
             self.stats.pulses += 1
+            self.stats.band(winner.band).queued += 1
 
         self.stats.last_onsets.append((time.time(), winner.band, strength))
         if len(self.stats.last_onsets) > 64:

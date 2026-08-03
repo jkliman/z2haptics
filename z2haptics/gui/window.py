@@ -109,6 +109,23 @@ class SettingsWindow(QWidget):
         self.meters_layout.addWidget(self.meters_hint)
         v.addWidget(meters_box)
 
+        per_band_box = QGroupBox("Per band")
+        pb = QVBoxLayout(per_band_box)
+        self.per_band_label = QLabel("(not running)")
+        self.per_band_label.setStyleSheet("font-family: Consolas, monospace;")
+        pb.addWidget(self.per_band_label)
+        hint = QLabel(
+            "detected = onsets found | won = beat other bands | lost = outranked\n"
+            "capped = blocked by this band's max rate | sent = reached the motor\n\n"
+            "If an event never feels right, this says which stage lost it: low "
+            "'detected' is a gate or sensitivity problem, high 'lost' means "
+            "another band is winning, high 'capped' means its own rate limit."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray;")
+        pb.addWidget(hint)
+        v.addWidget(per_band_box)
+
         stats_box = QGroupBox("Counters")
         sf = QFormLayout(stats_box)
         self.stat_labels = {}
@@ -160,6 +177,19 @@ class SettingsWindow(QWidget):
     def _on_stats(self, stats: dict) -> None:
         for key, lbl in self.stat_labels.items():
             lbl.setText(str(stats.get(key, 0)))
+
+        per_band = stats.get("per_band") or {}
+        if not per_band:
+            self.per_band_label.setText("(no onsets yet)")
+            return
+        header = f"{'band':<12}{'detected':>9}{'won':>7}{'lost':>7}{'capped':>8}{'sent':>7}"
+        rows = [header, "-" * len(header)]
+        for name, b in per_band.items():
+            rows.append(
+                f"{name:<12}{b['detected']:>9}{b['won']:>7}{b['lost']:>7}"
+                f"{b['capped']:>8}{b['queued']:>7}"
+            )
+        self.per_band_label.setText("\n".join(rows))
 
     def _on_status(self, message: str, running: bool) -> None:
         self.status_label.setText(message)

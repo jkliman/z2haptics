@@ -162,6 +162,40 @@ class BandEditor(QGroupBox):
             "elsewhere keeps falsely triggering this band. 0 disables the check.")
         form.addRow("Min share", self.min_share)
 
+        self.min_flatness = QDoubleSpinBox()
+        self.min_flatness.setRange(0.0, 1.0); self.min_flatness.setSingleStep(0.05)
+        self.min_flatness.setValue(band.min_flatness)
+        self.min_flatness.setToolTip(
+            "Reject tonal content. Spectral flatness is ~1 for noise-like sounds "
+            "(gunfire, explosions, impacts) and near 0 for played notes. Measured "
+            "on real material: gunshots ~0.90, music ~0.11.\n\n"
+            "Raise this when music keeps triggering the band. Set it to 0 for "
+            "bands that SHOULD react to tonal content, like a music profile's "
+            "kick and snare, or engine note in a racing profile.\n\n"
+            "0.45 is a good starting point for gunfire.")
+        form.addRow("Min flatness", self.min_flatness)
+
+        self.max_rate = QDoubleSpinBox()
+        self.max_rate.setRange(0.0, 60.0); self.max_rate.setSingleStep(1.0)
+        self.max_rate.setValue(band.max_rate)
+        self.max_rate.setToolTip(
+            "Cap on how often this band may win, in pulses/sec. 0 = unlimited.\n\n"
+            "The motor is a single actuator, so a constantly-firing band starves "
+            "everything else. Capping a busy band hands those frames to quieter, "
+            "more informative ones.")
+        form.addRow("Max rate", self.max_rate)
+
+        self.background_subtraction = QDoubleSpinBox()
+        self.background_subtraction.setRange(0.0, 1.0)
+        self.background_subtraction.setSingleStep(0.1)
+        self.background_subtraction.setValue(band.background_subtraction)
+        self.background_subtraction.setToolTip(
+            "Remove the slowly-learned steady background before measuring. Helps "
+            "against constant drones (engine note, ambience).\n\n"
+            "Measured as unhelpful for music in shooters once the adaptive "
+            "threshold was fixed, so the FPS profiles leave it off.")
+        form.addRow("Background sub.", self.background_subtraction)
+
         # -- pulse shaping
         self.duration = QSpinBox()
         self.duration.setRange(1, 2000); self.duration.setSuffix(" ms")
@@ -207,7 +241,8 @@ class BandEditor(QGroupBox):
         outer.addLayout(btns)
 
         for widget in (self.low, self.high, self.sensitivity, self.gate, self.refractory,
-                       self.min_share, self.duration, self.smin, self.smax,
+                       self.min_share, self.min_flatness, self.max_rate,
+                       self.background_subtraction, self.duration, self.smin, self.smax,
                        self.floor_db, self.ceil_db, self.priority):
             widget.valueChanged.connect(self._on_change)
         self.toggled.connect(self._on_change)
@@ -235,6 +270,9 @@ class BandEditor(QGroupBox):
         b.gate = self.gate.value()
         b.refractory_ms = self.refractory.value()
         b.min_share = self.min_share.value()
+        b.min_flatness = self.min_flatness.value()
+        b.max_rate = self.max_rate.value()
+        b.background_subtraction = self.background_subtraction.value()
         b.duration_ms = self.duration.value()
         b.strength_min = min(self.smin.value(), self.smax.value())
         b.strength_max = max(self.smin.value(), self.smax.value())

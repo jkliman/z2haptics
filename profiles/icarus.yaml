@@ -23,7 +23,7 @@ bands:
   - name: impact
     low_hz: 25
     high_hz: 100
-    sensitivity: 1.7
+    sensitivity: 2.5
     gate: 0.0035
     refractory_ms: 130
     duration_ms: 85
@@ -37,7 +37,7 @@ bands:
   - name: tools
     low_hz: 100
     high_hz: 900
-    sensitivity: 1.7
+    sensitivity: 2.5
     gate: 0.0028
     refractory_ms: 90
     duration_ms: 38
@@ -50,7 +50,7 @@ bands:
   - name: detail
     low_hz: 3000
     high_hz: 9000
-    sensitivity: 2.3
+    sensitivity: 3.1
     gate: 0.0020
     refractory_ms: 150
     duration_ms: 18

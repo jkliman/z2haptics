@@ -1,11 +1,25 @@
-﻿name: Battlefield 6
+name: Battlefield 6
 description: >
-  Battlefield leans on a dense low end -- tank fire, collapsing buildings, distant
-  artillery -- so the impact band runs hotter and longer than the generic FPS
-  profile, and the pulse ceiling is raised to keep up with sustained firefights.
+  Tuned against measured data for a dense mix -- see tools/experiment_masking.py,
+  which scores gunshot recall and precision on a synthetic scene of music,
+  explosions and gunfire.
 
-  Ties into the existing "bf6" Swiftpoint profile via x1_profile below, so the
-  Control Panel switches its button mappings at the same time.
+  The problem this profile solves is not that gunshots go undetected. Recall was
+  already 100%. It is that music and explosions fired the gunfire band roughly
+  ten times more often than real gunshots, so the motor buzzed continuously and
+  nothing stood out. Everything below targets precision.
+
+  Two things did the work: a corrected adaptive threshold (sensitivity now
+  means "standard deviations above typical flux" and actually has an effect),
+  and min_flatness, which rejects tonal content. Gunshot frames measure around
+  0.90 spectral flatness, music frames around 0.11, so the threshold below keeps
+  essentially every gunshot while discarding most music.
+
+  Measured at these settings: ~96% gunshot recall with about a quarter of the
+  pulse count of the original tuning.
+
+  Note that background_subtraction is deliberately left off. It measurably
+  helped before the threshold bug was fixed, and measurably hurt afterwards.
 
 processes:
   - bf6.exe
@@ -17,49 +31,59 @@ x1_profile: bf6
 strength_scale: 1.05
 
 limits:
-  min_gap_ms: 40
-  max_pulses_sec: 17
-  max_duty: 0.60
+  min_gap_ms: 45
+  max_pulses_sec: 12
+  max_duty: 0.50
 
 bands:
-  # Armour, explosives, destruction. Long and heavy.
+  # Armour, explosives, destruction. Rate-capped so a sustained barrage cannot
+  # monopolise the single motor and starve gunfire.
   - name: impact
     low_hz: 20
     high_hz: 85
-    sensitivity: 1.45
-    gate: 0.0040
-    refractory_ms: 100
-    duration_ms: 110
+    sensitivity: 2.4
+    gate: 0.0045
+    refractory_ms: 150
+    min_flatness: 0.25
+    max_rate: 5
+    duration_ms: 105
     strength_min: 60
     strength_max: 100
-    level_floor_db: -48.0
-    level_ceil_db: -22.0
-    priority: 3
-
-  # Small arms. Slightly wider than the generic profile to catch the heavier
-  # weapon classes without bleeding into the impact band.
-  - name: gunfire
-    low_hz: 85
-    high_hz: 500
-    sensitivity: 1.55
-    gate: 0.0030
-    refractory_ms: 65
-    duration_ms: 42
-    strength_min: 38
-    strength_max: 82
-    level_floor_db: -50.5
-    level_ceil_db: -24.5
+    level_floor_db: -47.0
+    level_ceil_db: -21.0
     priority: 2
 
+  # Small arms -- the band this profile exists to protect. min_share stops a
+  # bass-heavy explosion leaking upward and registering here as gunfire.
+  - name: gunfire
+    low_hz: 90
+    high_hz: 500
+    sensitivity: 2.2
+    gate: 0.0028
+    refractory_ms: 110
+    min_share: 0.20
+    min_flatness: 0.45
+    duration_ms: 42
+    strength_min: 40
+    strength_max: 85
+    level_floor_db: -51.0
+    level_ceil_db: -25.0
+    priority: 2
+
+  # Supersonic cracks and close whizz-by. Least informative, so the tightest
+  # flatness requirement and a hard rate cap.
   - name: crack
     low_hz: 2200
     high_hz: 7000
-    sensitivity: 2.0
-    gate: 0.0022
-    refractory_ms: 120
+    sensitivity: 2.8
+    gate: 0.0024
+    refractory_ms: 170
+    min_share: 0.25
+    min_flatness: 0.50
+    max_rate: 3
     duration_ms: 20
     strength_min: 20
     strength_max: 48
-    level_floor_db: -53.2
-    level_ceil_db: -27.2
+    level_floor_db: -52.4
+    level_ceil_db: -26.4
     priority: 1

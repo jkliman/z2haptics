@@ -199,6 +199,13 @@ class EngineController(QObject):
             "dropped_queue": sink["dropped_queue"],
             "errors": sink["errors"],
             "switches": stats.profile_switches,
+            "per_band": {
+                name: {
+                    "detected": b.detected, "won": b.won, "lost": b.lost,
+                    "capped": b.capped, "queued": b.queued,
+                }
+                for name, b in stats.bands.items()
+            },
         })
 
         levels = {}

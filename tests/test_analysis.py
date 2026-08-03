@@ -112,6 +112,151 @@ def test_min_share_rejects_leaked_energy():
     assert "low" not in fired
 
 
+def _burst(freq, dur, amp, sr=SR):
+    t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+    env = np.exp(-t * 30)
+    return (amp * env * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+
+
+def _noise_burst(lo, hi, dur, amp, sr=SR, seed=0):
+    """Broadband burst -- spectrally flat, like a gunshot."""
+    n = int(sr * dur)
+    rng = np.random.default_rng(seed)
+    spec = np.fft.rfft(rng.normal(0, 1, n))
+    freqs = np.fft.rfftfreq(n, 1 / sr)
+    spec[(freqs < lo) | (freqs > hi)] *= 0.02
+    sig = np.fft.irfft(spec, n)
+    sig /= np.max(np.abs(sig)) or 1
+    env = np.exp(-np.linspace(0, dur, n) * 35)
+    return (amp * env * sig).astype(np.float32)
+
+
+def test_sensitivity_actually_changes_detection_count():
+    """Regression: the adaptive threshold was inert.
+
+    It used to be median(flux) * sensitivity. Flux is max(0, energy - prev), so
+    roughly half of all frames are exactly zero and the median sits at zero --
+    the threshold collapsed to its 1e-9 floor and sensitivity had no effect at
+    any value between 1.5 and 5.0. Every scrap of positive flux became an onset,
+    which is what buried real events under music.
+    """
+    rng = np.random.default_rng(3)
+    busy = np.zeros(int(SR * 6), dtype=np.float32)
+    for i in range(60):
+        f = float(rng.choice([110, 130, 165, 196, 220]))
+        seg = tone(f, 0.09, amp=0.25)
+        start = int(i * 0.095 * SR)
+        busy[start:start + len(seg)] += seg[:len(busy) - start]
+
+    def count(sensitivity):
+        band = make_band(low_hz=90, high_hz=400, gate=0.0, sensitivity=sensitivity)
+        return len(BandAnalyzer([band], samplerate=SR).push(busy))
+
+    low, high = count(1.5), count(5.0)
+    assert low > high, f"sensitivity had no effect: {low} onsets at 1.5, {high} at 5.0"
+
+
+def _busy_music(duration, sr=SR, amp=0.30, seed=5):
+    """Continuously moving notes -- what actually floods the detector.
+
+    Not a single sustained tone: a steady tone produces almost no flux and
+    triggers nothing. It is note-to-note movement that keeps firing onsets.
+    """
+    rng = np.random.default_rng(seed)
+    out = np.zeros(int(sr * duration), dtype=np.float32)
+    scale = [110, 131, 147, 165, 196, 220, 247]
+    t = 0.0
+    while t < duration - 0.15:
+        d = float(rng.choice([0.12, 0.16, 0.2]))
+        f = float(rng.choice(scale))
+        seg = tone(f, d, amp) + tone(f * 2, d, amp * 0.5)
+        # Real instruments ramp in over a few milliseconds. An instantaneous
+        # attack is a discontinuity, which reads as broadband and would make
+        # synthetic music look far more gunshot-like than the real thing.
+        ramp = np.linspace(0.0, 1.0, int(sr * 0.02), dtype=np.float32)
+        seg[:len(ramp)] *= ramp
+        i = int(t * sr)
+        out[i:i + len(seg)] += seg[:len(out) - i].astype(np.float32)
+        t += d
+    return out
+
+
+def test_min_flatness_suppresses_musical_onsets():
+    """Music is tonal, gunfire is broadband. Flatness separates them.
+
+    Measured on continuous material, which is how it is actually used -- see the
+    limitation note on Band.min_flatness about attacks from silence.
+
+    The effect is real but moderate. Once the adaptive threshold was fixed,
+    flatness accounts for roughly a 20-25% cut in false positives on realistic
+    material (tools/experiment_masking.py), not the order of magnitude it
+    appeared to give while the threshold was inert.
+    """
+    music = _busy_music(6.0)
+
+    def count(min_flatness):
+        band = make_band(low_hz=90, high_hz=450, gate=0.0, sensitivity=1.5,
+                         min_flatness=min_flatness)
+        return len(BandAnalyzer([band], samplerate=SR).push(music))
+
+    unfiltered, filtered = count(0.0), count(0.45)
+    assert unfiltered > 0, "premise: music triggers onsets without the filter"
+    assert filtered < unfiltered * 0.9, (
+        f"flatness barely helped: {unfiltered} onsets -> {filtered}"
+    )
+
+
+def test_broadband_events_survive_the_flatness_filter():
+    """The filter must not cost us the events it is protecting."""
+    music = _busy_music(4.0)
+    shot = _noise_burst(120, 400, 0.12, amp=0.6)
+    scene = music.copy()
+    at = int(2.5 * SR)
+    scene[at:at + len(shot)] += shot[:len(scene) - at]
+
+    band = make_band(low_hz=90, high_hz=450, gate=0.0, sensitivity=1.5,
+                     min_flatness=0.45, refractory_ms=0.0)
+    analyzer = BandAnalyzer([band], samplerate=SR)
+
+    fired_near_shot = False
+    pos, clock = 0, 0.0
+    while pos < len(scene):
+        for _ in analyzer.push(scene[pos:pos + 512]):
+            if abs(clock - 2.5) < 0.15:
+                fired_near_shot = True
+        pos += 512
+        clock += 512 / SR
+
+    assert fired_near_shot, "broadband burst was rejected by the flatness filter"
+
+
+def test_background_subtraction_still_detects_in_silence():
+    """It must not cost us detections when there is nothing to subtract."""
+    band = make_band(gate=0.0, background_subtraction=1.0)
+    a = BandAnalyzer([band], samplerate=SR)
+    a.push(silence(0.5))
+    assert a.push(tone(100, 0.3, amp=0.5))
+
+
+def test_background_absorbs_sustained_content_not_transients():
+    """The asymmetric time constants: steady sound is learned, hits are not."""
+    band = make_band(gate=0.0, background_subtraction=1.0)
+
+    sustained = BandAnalyzer([band], samplerate=SR)
+    sustained.push(tone(100, 2.5, amp=0.5))
+    learned = float(sustained._background.max())
+
+    transient = BandAnalyzer([band], samplerate=SR)
+    transient.push(silence(0.6))
+    transient.push(_burst(100, 0.1, amp=0.5))
+    absorbed = float(transient._background.max())
+
+    assert absorbed < learned * 0.5, (
+        f"a brief transient inflated the background as much as sustained tone "
+        f"({absorbed:.4f} vs {learned:.4f})"
+    )
+
+
 def test_reconfigure_swaps_bands():
     a = BandAnalyzer([make_band(name="a")], samplerate=SR)
     a.reconfigure([make_band(name="b", low_hz=40, high_hz=200)])

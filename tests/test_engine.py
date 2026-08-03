@@ -19,9 +19,9 @@ def band(name, priority, **kw):
     return Band(name=name, **defaults)
 
 
-def onset(name, strength):
+def onset(name, strength, flatness=0.8):
     return Onset(band=name, strength=strength, level=0.01, level_db=-40.0,
-                 flux=1.0, threshold=0.5, share=0.5)
+                 flux=1.0, threshold=0.5, share=0.5, flatness=flatness)
 
 
 # -- winner selection ---------------------------------------------------------

@@ -53,8 +53,9 @@ class Profile:
 def _band_from_dict(d: dict) -> Band:
     known = {
         "name", "low_hz", "high_hz", "sensitivity", "gate", "refractory_ms",
-        "min_share", "duration_ms", "strength_min", "strength_max",
-        "level_floor_db", "level_ceil_db", "priority", "enabled",
+        "min_share", "min_flatness", "background_subtraction", "max_rate",
+        "duration_ms", "strength_min", "strength_max", "level_floor_db",
+        "level_ceil_db", "priority", "enabled",
     }
     unknown = set(d) - known
     if unknown:
@@ -111,6 +112,9 @@ def profile_to_dict(p: Profile) -> dict:
                 "gate": round(b.gate, 6),
                 "refractory_ms": round(b.refractory_ms, 1),
                 "min_share": round(b.min_share, 3),
+                "min_flatness": round(b.min_flatness, 3),
+                "background_subtraction": round(b.background_subtraction, 3),
+                "max_rate": round(b.max_rate, 1),
                 "duration_ms": int(b.duration_ms),
                 "strength_min": int(b.strength_min),
                 "strength_max": int(b.strength_max),
