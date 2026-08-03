@@ -165,6 +165,57 @@ def test_apply_profile_updates_limits(monkeypatch):
     assert engine.stats.profile_switches == 1
 
 
+def test_engine_turns_audio_into_shaped_pulses(monkeypatch):
+    """Full path: audio in -> onset -> winner -> shaped pulse on the queue.
+
+    Exercises HapticEngine._on_audio directly so no device or capture is needed.
+    """
+    import numpy as np
+
+    monkeypatch.setattr("z2haptics.engine.LoopbackCapture", lambda **kw: type(
+        "FakeCapture", (), {"start": lambda s: None, "stop": lambda s: None,
+                            "resolved_name": "fake"})())
+
+    profile = Profile(
+        name="T",
+        bands=[
+            Band(name="low", low_hz=40, high_hz=120, gate=0.0, refractory_ms=0.0,
+                 duration_ms=90, strength_min=50, strength_max=100,
+                 level_floor_db=-120.0, level_ceil_db=-10.0, priority=3),
+            Band(name="high", low_hz=2000, high_hz=6000, gate=0.0, refractory_ms=0.0,
+                 duration_ms=20, strength_min=20, strength_max=50,
+                 level_floor_db=-120.0, level_ceil_db=-10.0, priority=1),
+        ],
+    )
+
+    fired: list[Pulse] = []
+    engine = HapticEngine(profile=profile, dry_run=True)
+    engine.sink.fire = lambda p: fired.append(p) or True
+
+    sr = 48000
+
+    def tone(freq, dur, amp):
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+        return (amp * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+
+    engine._on_audio(np.zeros(sr // 2, dtype=np.float32))   # learn the floor
+    engine._on_audio(tone(70, 0.25, 0.6))
+    assert fired, "a loud low tone produced no pulse"
+    assert fired[0].label.startswith("low")
+    assert fired[0].duration_ms == 90
+    assert 50 <= fired[0].strength <= 100
+
+    loud_strength = fired[0].strength
+    fired.clear()
+
+    engine2 = HapticEngine(profile=profile, dry_run=True)
+    engine2.sink.fire = lambda p: fired.append(p) or True
+    engine2._on_audio(np.zeros(sr // 2, dtype=np.float32))
+    engine2._on_audio(tone(70, 0.25, 0.02))
+    assert fired, "a quiet low tone produced no pulse"
+    assert fired[0].strength < loud_strength, "quiet event should pulse softer"
+
+
 def test_reapplying_the_same_profile_is_a_noop(monkeypatch):
     monkeypatch.setattr("z2haptics.engine.LoopbackCapture", lambda **kw: type(
         "FakeCapture", (), {"start": lambda s: None, "stop": lambda s: None,
