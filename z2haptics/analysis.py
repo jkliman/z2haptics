@@ -91,6 +91,11 @@ class Band:
     level_ceil_db: float = -20.0   # loud events map here
     priority: int = 0             # higher wins when the queue is contended
 
+    # Identify which weapon fired and use its pulse shape instead of this band's.
+    # Requires the profile to name a weapon_set. Onsets that match nothing
+    # confidently keep this band's settings.
+    classify: bool = False
+
     enabled: bool = True
 
     def bins(self, freqs: np.ndarray) -> tuple[int, int]:
@@ -111,6 +116,7 @@ class Onset:
     threshold: float
     share: float           # this band's fraction of the frame's total flux
     flatness: float        # spectral flatness; ~1 = noise-like, ~0 = tonal
+    feature: "np.ndarray | None" = None   # spectral fingerprint, for weapon ID
 
 
 @dataclass
@@ -220,6 +226,10 @@ class BandAnalyzer:
         self._bg_up = float(np.exp(-hop_seconds / max(background_tau_up, 1e-6)))
         self._bg_down = float(np.exp(-hop_seconds / max(background_tau_down, 1e-6)))
         self._background: np.ndarray | None = None
+
+        # Attaching a spectral fingerprint to each onset costs a little work, so
+        # it is only done when something downstream actually classifies.
+        self.compute_features = False
 
     @property
     def state(self) -> dict[str, BandState]:
@@ -393,7 +403,53 @@ class BandAnalyzer:
                 )
             )
 
+        # One fingerprint per frame, shared by every onset in it -- they all
+        # describe the same instant of audio.
+        if onsets and self.compute_features:
+            feature = spectral_feature(spectrum, self.freqs)
+            for onset in onsets:
+                onset.feature = feature
+
         return onsets
+
+
+FEATURE_LOW_HZ = 80.0
+FEATURE_HIGH_HZ = 9000.0
+FEATURE_BINS = 24
+
+
+def spectral_feature(
+    spectrum: np.ndarray,
+    freqs: np.ndarray,
+    low_hz: float = FEATURE_LOW_HZ,
+    high_hz: float = FEATURE_HIGH_HZ,
+    n_bins: int = FEATURE_BINS,
+) -> np.ndarray:
+    """Compact log-spaced fingerprint of a frame, for weapon identification.
+
+    Log-spaced bins because timbre differences that matter perceptually are
+    roughly logarithmic in frequency; linear bins would spend most of their
+    resolution on the top octave where two rifles look nearly identical.
+
+    The result is log-magnitude, mean-removed and L2-normalised, which makes it
+    invariant to overall loudness. That matters: the same weapon fired close up
+    and at distance must match the same template, and only its *shape* is
+    reliable -- its level is not.
+    """
+    edges = np.geomspace(max(low_hz, 1.0), high_hz, n_bins + 1)
+    out = np.zeros(n_bins, dtype=np.float32)
+
+    for i in range(n_bins):
+        lo = int(np.searchsorted(freqs, edges[i], "left"))
+        hi = int(np.searchsorted(freqs, edges[i + 1], "right"))
+        hi = max(hi, lo + 1)
+        band = spectrum[lo:hi]
+        out[i] = float(np.mean(band)) if band.size else 0.0
+
+    out = np.log10(np.maximum(out, 1e-10))
+    out -= out.mean()
+    norm = float(np.linalg.norm(out))
+    return out / norm if norm > 1e-9 else out
 
 
 def to_mono(data: np.ndarray) -> np.ndarray:

@@ -357,6 +357,63 @@ def analyze_session(session_dir: Path, nfft: int = 4096) -> dict:
     return {"meta": meta, "samplerate": samplerate, "spectra": spectra, "freqs": freqs}
 
 
+def build_weapon_set(
+    session_dir: Path,
+    set_name: str | None = None,
+    nfft: int = 4096,
+    exclude: tuple[str, ...] = ("ambient",),
+):
+    """Turn a learn session's labelled captures into a weapon set.
+
+    One fingerprint per captured sample, taken from the loudest part of that
+    sample -- the pre-roll deliberately holds ambience, and averaging that in
+    would blur every weapon towards the room rather than towards itself.
+    """
+    from .analysis import spectral_feature
+    from .weapons import WeaponSet, build_template
+
+    meta_path = session_dir / "session.json"
+    if not meta_path.exists():
+        raise FileNotFoundError(f"no session.json in {session_dir}")
+
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    samplerate = meta["samplerate"]
+
+    by_label: dict[str, list[np.ndarray]] = {}
+    for s in meta["samples"]:
+        if s["label"] in exclude:
+            continue
+        path = session_dir / s["filename"]
+        if not path.exists():
+            continue
+        with wave.open(str(path), "rb") as w:
+            raw = w.readframes(w.getnframes())
+        seg = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32767.0
+
+        spectrum = _peak_spectrum(seg, nfft)
+        freqs = np.fft.rfftfreq(nfft, 1.0 / samplerate)
+        by_label.setdefault(s["label"], []).append(spectral_feature(spectrum, freqs))
+
+    templates = [build_template(label, feats)
+                 for label, feats in by_label.items() if feats]
+
+    return WeaponSet(name=set_name or session_dir.name, templates=templates)
+
+
+def _peak_spectrum(seg: np.ndarray, nfft: int) -> np.ndarray:
+    """Magnitude spectrum of the loudest frame in a segment."""
+    if seg.size < nfft:
+        seg = np.pad(seg, (0, nfft - seg.size))
+    hop = nfft // 4
+    best, best_energy = seg[:nfft], -1.0
+    for start in range(0, len(seg) - nfft + 1, hop):
+        frame = seg[start:start + nfft]
+        energy = float(np.sqrt(np.mean(frame ** 2)))
+        if energy > best_energy:
+            best, best_energy = frame, energy
+    return np.abs(np.fft.rfft(best * np.hanning(nfft)))
+
+
 def suggest_bands(
     spec: LabelSpectrum,
     background_db: np.ndarray | None,

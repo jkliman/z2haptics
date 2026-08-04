@@ -53,19 +53,33 @@ class BandStats:
 
 
 @dataclass
+class WeaponStats:
+    hits: int = 0
+    confidence: float = 0.0
+
+
+@dataclass
 class EngineStats:
     onsets: int = 0
     pulses: int = 0
     suppressed_stacking: int = 0
     profile_switches: int = 0
+    unclassified: int = 0                            # onsets no weapon matched
     started_at: float = field(default_factory=time.time)
     last_onsets: list = field(default_factory=list)  # recent (band, strength) for the UI
     bands: dict = field(default_factory=dict)        # band name -> BandStats
+    weapons: dict = field(default_factory=dict)      # weapon name -> WeaponStats
 
     def band(self, name: str) -> BandStats:
         stats = self.bands.get(name)
         if stats is None:
             stats = self.bands[name] = BandStats()
+        return stats
+
+    def weapon(self, name: str) -> WeaponStats:
+        stats = self.weapons.get(name)
+        if stats is None:
+            stats = self.weapons[name] = WeaponStats()
         return stats
 
 
@@ -95,12 +109,15 @@ class HapticEngine:
         self.stats = EngineStats()
         self._lock = threading.Lock()
 
+        self.weapons = self._load_weapons(profile)
+
         self.analyzer = BandAnalyzer(
             bands=profile.bands,
             samplerate=samplerate,
             frame_size=frame_size,
             hop_size=hop_size,
         )
+        self.analyzer.compute_features = self._needs_features(profile)
         self.sink = HapticSink(
             connection=X1Connection(),
             min_gap_ms=profile.limits.min_gap_ms,
@@ -149,6 +166,24 @@ class HapticEngine:
 
     # -- profile switching ----------------------------------------------------
 
+    @staticmethod
+    def _needs_features(profile: Profile) -> bool:
+        return bool(profile.weapon_set) and any(b.classify for b in profile.bands)
+
+    @staticmethod
+    def _load_weapons(profile: Profile):
+        if not profile.weapon_set:
+            return None
+        try:
+            from .weapons import resolve
+            ws = resolve(profile.weapon_set)
+        except Exception as e:
+            log.warning("could not load weapon set %r: %s", profile.weapon_set, e)
+            return None
+        if ws is None:
+            log.warning("weapon set %r not found", profile.weapon_set)
+        return ws
+
     def apply_profile(self, profile: Profile, switch_x1: bool = True) -> None:
         """Switch the active profile.
 
@@ -163,6 +198,8 @@ class HapticEngine:
             log.info("switching profile: %s -> %s", self.profile.name, profile.name)
             self.profile = profile
             self.analyzer.reconfigure(profile.bands)
+            self.analyzer.compute_features = self._needs_features(profile)
+            self.weapons = self._load_weapons(profile)
             self.sink.min_gap_ms = profile.limits.min_gap_ms
             self.sink.max_pulses_sec = profile.limits.max_pulses_sec
             self.sink.max_duty = profile.limits.max_duty
@@ -263,17 +300,40 @@ class HapticEngine:
 
         self._band_wins.setdefault(winner.band, []).append(now)
 
-        span = band.strength_max - band.strength_min
-        strength = band.strength_min + winner.strength * span
+        # Identify the weapon, if this band is set up for it. An unrecognised
+        # onset keeps the band's own shaping -- a confident-looking wrong weapon
+        # is worse than no weapon at all.
+        weapon = None
+        if band.classify and self.weapons is not None:
+            weapon, confidence = self.weapons.classify(winner.feature)
+            if weapon is not None:
+                self.stats.weapon(weapon.name).hits += 1
+                self.stats.weapon(weapon.name).confidence = confidence
+            else:
+                self.stats.unclassified += 1
+
+        duration = band.duration_ms
+        smin, smax = band.strength_min, band.strength_max
+        if weapon is not None:
+            duration = weapon.duration_ms if weapon.duration_ms is not None else duration
+            smin = weapon.strength_min if weapon.strength_min is not None else smin
+            smax = weapon.strength_max if weapon.strength_max is not None else smax
+
+        span = smax - smin
+        strength = smin + winner.strength * span
         strength = int(round(strength * profile.strength_scale))
         strength = max(0, min(100, strength))
         if strength <= 0:
             return
 
+        label = f"{winner.band}@{winner.strength:.2f}"
+        if weapon is not None:
+            label = f"{weapon.name}:{label}"
+
         pulse = Pulse(
-            duration_ms=band.duration_ms,
+            duration_ms=duration,
             strength=strength,
-            label=f"{winner.band}@{winner.strength:.2f}",
+            label=label,
             priority=band.priority,
         )
         if self.sink.fire(pulse):

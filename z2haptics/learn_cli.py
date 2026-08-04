@@ -20,6 +20,7 @@ from .learn import (
     HotkeyListener,
     LearnSession,
     analyze_session,
+    build_weapon_set,
     suggest_bands,
 )
 
@@ -278,6 +279,166 @@ def _write_profile(session_dir, args, spectra, background_db, event_labels) -> P
     return out
 
 
+def cmd_weapons(args) -> int:
+    """Build a weapon set from a learn session, or inspect an existing one."""
+    from .weapons import discover, resolve, save, separability
+
+    if args.live:
+        return _live_classify(args)
+
+    if args.list:
+        sets = discover()
+        if not sets:
+            print("No weapon sets. Build one with:")
+            print("  z2haptics learn --name bf6 --labels ak74,m4,sniper")
+            print("  z2haptics weapons --from bf6")
+            return 0
+        for ws in sets.values():
+            print(f"\n{ws.name}   ({len(ws.templates)} weapons)  {ws.source}")
+            for t in ws.templates:
+                shaping = []
+                if t.duration_ms is not None:
+                    shaping.append(f"{t.duration_ms}ms")
+                if t.strength_min is not None or t.strength_max is not None:
+                    shaping.append(f"{t.strength_min}-{t.strength_max}")
+                extra = f"   [{', '.join(shaping)}]" if shaping else ""
+                print(f"    {t.name:<14} {t.samples:>3} samples   "
+                      f"consistency {t.spread:.2f}{extra}")
+        return 0
+
+    if not args.from_session:
+        print("Give --from SESSION to build, or --list to inspect.", file=sys.stderr)
+        return 1
+
+    root = Path(args.session_dir) if args.session_dir else SESSIONS_DIR
+    session_dir = (Path(args.from_session) if Path(args.from_session).is_dir()
+                   else root / args.from_session)
+    if not session_dir.is_dir():
+        print(f"no session at {session_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        ws = build_weapon_set(session_dir, set_name=args.name)
+    except Exception as e:
+        print(f"could not build weapon set: {e}", file=sys.stderr)
+        return 1
+
+    if not ws.templates:
+        print("No usable samples -- did you capture any labelled events?", file=sys.stderr)
+        return 1
+
+    print(f"Weapon set {ws.name!r} from {session_dir}\n")
+    for t in ws.templates:
+        warn = "  <- few samples" if t.samples < 4 else ""
+        print(f"  {t.name:<14} {t.samples:>3} samples   "
+              f"consistency {t.spread:.2f}{warn}")
+
+    print("\nConfusability (1.00 = indistinguishable):")
+    pairs = separability(ws)
+    if not pairs:
+        print("  (only one weapon)")
+    for a, b, sim in pairs[:8]:
+        flag = "  <- too similar to tell apart" if sim > 0.9 else ""
+        print(f"  {a:<12} vs {b:<12} {sim:5.2f}{flag}")
+
+    path = save(ws, Path(args.out) if args.out else None)
+    print(f"\nWrote {path}")
+    print("\nTo use it, add to your profile:")
+    print(f"  weapon_set: {ws.name}")
+    print("and set `classify: true` on the band that should be identified.")
+
+    weak = [t.name for t in ws.templates if t.spread < 0.8]
+    if weak:
+        print(f"\nLow consistency: {', '.join(weak)}. Those captures disagree with "
+              f"each other, usually because other sounds bled in. Recapture them "
+              f"somewhere quieter if classification proves unreliable.")
+    return 0
+
+
+def _live_classify(args) -> int:
+    """Name each detected shot in real time, so accuracy can be judged in game.
+
+    Prints every onset with its best match and confidence, including the ones it
+    declines -- a declined shot falls back to a generic pulse, which is the safe
+    outcome, and seeing how often that happens is the point.
+    """
+    import time
+
+    from .analysis import BandAnalyzer
+    from .audio import LoopbackCapture
+    from .profiles import discover as discover_profiles
+    from .weapons import resolve
+
+    ws = resolve(args.set) if args.set else None
+    if ws is None:
+        print(f"No weapon set {args.set!r}. Build one first:", file=sys.stderr)
+        print("  z2haptics weapons --from SESSION", file=sys.stderr)
+        return 1
+
+    profiles = discover_profiles()
+    profile = profiles.get(args.profile) if args.profile else None
+    if profile is None:
+        profile = profiles.get("Battlefield 6") or profiles.get("FPS")
+    if profile is None:
+        print("No suitable profile found.", file=sys.stderr)
+        return 1
+
+    bands = [b for b in profile.bands if b.classify] or profile.bands
+    analyzer = BandAnalyzer(bands, samplerate=args.samplerate)
+    analyzer.compute_features = True
+
+    tally: dict[str, int] = {}
+    declined = 0
+
+    def on_audio(mono):
+        nonlocal declined
+        for onset in analyzer.push(mono):
+            match, score = ws.classify(onset.feature)
+            if match is None:
+                declined += 1
+                name, mark = "(declined)", " "
+            else:
+                name = match.name
+                tally[name] = tally.get(name, 0) + 1
+                mark = "*"
+            print(f"  {mark} {onset.band:<10} {name:<14} conf {score:5.2f}   "
+                  f"level {onset.level_db:6.1f}dB  flat {onset.flatness:.2f}")
+
+    cap = LoopbackCapture(on_audio, device_name=args.device,
+                          samplerate=args.samplerate, blocksize=512)
+    try:
+        cap.start()
+    except Exception as e:
+        print(f"capture failed: {e}", file=sys.stderr)
+        return 1
+
+    print(f"Weapon set : {ws.name}  ({len(ws.templates)} weapons)")
+    print(f"Profile    : {profile.name}   bands: {', '.join(b.name for b in bands)}")
+    print(f"Device     : {cap.resolved_name}")
+    print(f"Thresholds : confidence >= {ws.min_confidence}, margin >= {ws.min_margin}")
+    print("\nFire away. Ctrl+C to stop.\n")
+
+    try:
+        while True:
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cap.stop()
+
+    total = sum(tally.values()) + declined
+    print(f"\n\n{total} onsets:")
+    for name, count in sorted(tally.items(), key=lambda kv: -kv[1]):
+        print(f"  {name:<14} {count:>4}")
+    print(f"  {'(declined)':<14} {declined:>4}")
+    if total:
+        print(f"\nnamed {1 - declined / total:.0%} of onsets")
+        if declined / total > 0.7:
+            print("Mostly declining. Either the templates need more/cleaner samples,")
+            print("or these weapons genuinely sound too alike to separate.")
+    return 0
+
+
 def register(sub) -> None:
     p = sub.add_parser("learn", help="capture in-game event signatures with hotkeys")
     p.add_argument("--name", required=True, help="session name, e.g. avatar")
@@ -303,3 +464,18 @@ def register(sub) -> None:
     p.add_argument("--out", help="explicit output path for the profile")
     p.add_argument("--session-dir", help="override where sessions are stored")
     p.set_defaults(func=cmd_analyze)
+
+    p = sub.add_parser("weapons", help="build or inspect a per-weapon classifier")
+    p.add_argument("--from", dest="from_session", metavar="SESSION",
+                   help="learn session to build the weapon set from")
+    p.add_argument("--name", help="name for the weapon set (default: session name)")
+    p.add_argument("--out", help="explicit output path")
+    p.add_argument("--list", action="store_true", help="list existing weapon sets")
+    p.add_argument("--live", action="store_true",
+                   help="name each shot in real time, to check accuracy in game")
+    p.add_argument("--set", help="weapon set to use with --live")
+    p.add_argument("--profile", help="profile whose bands to detect with (--live)")
+    p.add_argument("-d", "--device", help="loopback device name substring")
+    p.add_argument("--samplerate", type=int, default=48000)
+    p.add_argument("--session-dir", help="override where sessions are stored")
+    p.set_defaults(func=cmd_weapons)

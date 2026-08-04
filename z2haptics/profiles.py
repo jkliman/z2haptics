@@ -45,6 +45,9 @@ class Profile:
     # Optionally drive the Control Panel's own profile switching alongside ours.
     x1_profile: str | None = None
 
+    # Name of (or path to) a weapon set, used by bands with classify: true.
+    weapon_set: str | None = None
+
     def matches(self, process_name: str) -> bool:
         p = process_name.lower()
         return any(p == proc.lower() for proc in self.processes)
@@ -55,7 +58,7 @@ def _band_from_dict(d: dict) -> Band:
         "name", "low_hz", "high_hz", "sensitivity", "gate", "refractory_ms",
         "min_share", "min_flatness", "background_subtraction", "max_rate",
         "duration_ms", "strength_min", "strength_max", "level_floor_db",
-        "level_ceil_db", "priority", "enabled",
+        "level_ceil_db", "priority", "classify", "enabled",
     }
     unknown = set(d) - known
     if unknown:
@@ -82,6 +85,7 @@ def load_profile(path: Path) -> Profile:
         ),
         bands=[_band_from_dict(b) for b in bands_raw],
         x1_profile=raw.get("x1_profile"),
+        weapon_set=raw.get("weapon_set"),
         source=path,
     )
 
@@ -97,6 +101,7 @@ def profile_to_dict(p: Profile) -> dict:
         "description": p.description,
         "processes": list(p.processes),
         **({"x1_profile": p.x1_profile} if p.x1_profile else {}),
+        **({"weapon_set": p.weapon_set} if p.weapon_set else {}),
         "strength_scale": round(p.strength_scale, 3),
         "limits": {
             "min_gap_ms": round(p.limits.min_gap_ms, 1),
@@ -121,6 +126,7 @@ def profile_to_dict(p: Profile) -> dict:
                 "level_floor_db": round(b.level_floor_db, 1),
                 "level_ceil_db": round(b.level_ceil_db, 1),
                 "priority": int(b.priority),
+                "classify": bool(b.classify),
                 "enabled": bool(b.enabled),
             }
             for b in p.bands
