@@ -1,25 +1,21 @@
 name: Battlefield 6
 description: >
-  Tuned against measured data for a dense mix -- see tools/experiment_masking.py,
-  which scores gunshot recall and precision on a synthetic scene of music,
-  explosions and gunfire.
+  Tuned against 42 real captures from this game rather than from assumption --
+  see ~/.z2haptics/sessions/bf6 and tools/validate_weapons.py.
 
-  The problem this profile solves is not that gunshots go undetected. Recall was
-  already 100%. It is that music and explosions fired the gunfire band roughly
-  ten times more often than real gunshots, so the motor buzzed continuously and
-  nothing stood out. Everything below targets precision.
+  The band layout here is the single biggest correction. The original profile
+  put gunfire at 90-500Hz on the reasonable-sounding theory that a weapon report
+  is a mid-range thump. Measured, it is not: across every captured weapon only
+  2-12% of the energy sits below 500Hz, while 60-75% sits above 2kHz. BF6
+  gunfire is dominated by mechanical crack and high-frequency transient, so the
+  band that matters is 1500-9000Hz.
 
-  Two things did the work: a corrected adaptive threshold (sensitivity now
-  means "standard deviations above typical flux" and actually has an effect),
-  and min_flatness, which rejects tonal content. Gunshot frames measure around
-  0.90 spectral flatness, music frames around 0.11, so the threshold below keeps
-  essentially every gunshot while discarding most music.
-
-  Measured at these settings: ~96% gunshot recall with about a quarter of the
-  pulse count of the original tuning.
-
-  Note that background_subtraction is deliberately left off. It measurably
-  helped before the threshold bug was fixed, and measurably hurt afterwards.
+  Weapon identification is enabled on that band via the bf6 weapon set. Measured
+  by leave-one-out cross-validation on the captures: the LMG is identified 7/7,
+  the sniper 8/11, and assault/SMG are not separable from each other so they
+  share one "rifle" class which mostly declines to this band's generic pulse.
+  Declining is the intended outcome -- a confidently wrong weapon feels worse
+  than a generic hit.
 
 processes:
   - bf6.exe
@@ -27,6 +23,7 @@ processes:
   - bf2042.exe
 
 x1_profile: bf6
+weapon_set: bf6
 
 strength_scale: 1.05
 
@@ -36,11 +33,12 @@ limits:
   max_duty: 0.50
 
 bands:
-  # Armour, explosives, destruction. Rate-capped so a sustained barrage cannot
-  # monopolise the single motor and starve gunfire.
+  # Explosions and heavy impacts. Real captures show 19-28% of energy down here
+  # on the heavier weapons, so it earns its place -- but it is rate-capped so a
+  # barrage cannot monopolise the single motor.
   - name: impact
     low_hz: 20
-    high_hz: 85
+    high_hz: 120
     sensitivity: 2.4
     gate: 0.0045
     refractory_ms: 150
@@ -53,37 +51,38 @@ bands:
     level_ceil_db: -21.0
     priority: 2
 
-  # Small arms -- the band this profile exists to protect. min_share stops a
-  # bass-heavy explosion leaking upward and registering here as gunfire.
+  # Gunfire, where it actually lives. This is the band the weapon classifier
+  # runs on.
   - name: gunfire
-    low_hz: 90
-    high_hz: 500
+    low_hz: 1500
+    high_hz: 9000
     sensitivity: 2.2
-    gate: 0.0028
-    refractory_ms: 110
-    min_share: 0.20
+    gate: 0.0030
+    refractory_ms: 90
     min_flatness: 0.45
+    classify: true
     duration_ms: 42
-    strength_min: 40
+    strength_min: 42
     strength_max: 85
-    level_floor_db: -51.0
-    level_ceil_db: -25.0
+    level_floor_db: -50.0
+    level_ceil_db: -24.0
     priority: 2
 
-  # Supersonic cracks and close whizz-by. Least informative, so the tightest
-  # flatness requirement and a hard rate cap.
-  - name: crack
-    low_hz: 2200
-    high_hz: 7000
-    sensitivity: 2.8
-    gate: 0.0024
-    refractory_ms: 170
+  # Mid-range body. Weak in this game's mix, so it is a light accent only and
+  # deliberately low priority -- it exists to catch the occasional muffled or
+  # distant report that the main band misses.
+  - name: body
+    low_hz: 300
+    high_hz: 1500
+    sensitivity: 2.6
+    gate: 0.0032
+    refractory_ms: 160
     min_share: 0.25
-    min_flatness: 0.50
+    min_flatness: 0.40
     max_rate: 3
-    duration_ms: 20
-    strength_min: 20
-    strength_max: 48
-    level_floor_db: -52.4
-    level_ceil_db: -26.4
+    duration_ms: 30
+    strength_min: 25
+    strength_max: 55
+    level_floor_db: -49.9
+    level_ceil_db: -23.9
     priority: 1

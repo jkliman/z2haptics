@@ -89,13 +89,21 @@ def cmd_learn(args) -> int:
 
     try:
         while not stop_flag["stop"]:
-            time.sleep(0.15)
+            time.sleep(0.1)
             counts = "  ".join(f"{l}:{session.counts.get(l, 0)}"
                                for l in [*labels, "ambient"])
             recent = ""
             if last_mark["label"] and time.time() - last_mark["at"] < 1.2:
                 recent = f"   <- {last_mark['label']}"
-            sys.stdout.write(f"\r  captured  {counts}{recent}        ")
+
+            # Live level, so silence is obvious immediately rather than after
+            # the session is analysed and found to be worthless.
+            peak = session.recent_peak
+            bars = int(min(peak * 60, 20))
+            meter = "#" * bars + "-" * (20 - bars)
+            warn = "  NO AUDIO" if session.session_peak < 0.002 else ""
+
+            sys.stdout.write(f"\r  [{meter}] {peak:6.4f}{warn}   {counts}{recent}    ")
             sys.stdout.flush()
     except KeyboardInterrupt:
         pass
@@ -106,6 +114,17 @@ def cmd_learn(args) -> int:
 
     total = sum(session.counts.values())
     print(f"\n\nSaved {total} sample(s) to {session.dir}")
+
+    if session.session_peak < 0.002:
+        print(f"\nWARNING: peak level over the whole session was "
+              f"{session.session_peak:.5f} -- effectively silence.")
+        print("These captures are unusable. Likely causes:")
+        print("  * the game mutes its audio when it loses focus")
+        print("  * game audio is routed to a device other than the one captured")
+        print("Run `python tools/find_game_audio.py` while firing to find the right")
+        print("device, then pass it with --device.")
+        return 1
+
     if total == 0:
         print("Nothing captured -- no marks were registered.")
         return 1
@@ -317,14 +336,32 @@ def cmd_weapons(args) -> int:
         print(f"no session at {session_dir}", file=sys.stderr)
         return 1
 
+    merge: dict[str, str] = {}
+    if args.merge:
+        for pair in args.merge.split(","):
+            src, _, dst = pair.partition("=")
+            if src.strip() and dst.strip():
+                merge[src.strip()] = dst.strip()
+
+    report: list = []
     try:
-        ws = build_weapon_set(session_dir, set_name=args.name)
+        ws = build_weapon_set(session_dir, set_name=args.name, report=report,
+                              merge=merge or None)
     except Exception as e:
         print(f"could not build weapon set: {e}", file=sys.stderr)
         return 1
 
+    skipped = report[0] if report else {}
+    if skipped:
+        total_skipped = sum(skipped.values())
+        print(f"Skipped {total_skipped} silent capture(s): "
+              f"{', '.join(f'{k} x{v}' for k, v in skipped.items())}")
+        print("Those marks landed on silence -- game muted, wrong device, or the")
+        print("shot fell outside the capture window.\n")
+
     if not ws.templates:
-        print("No usable samples -- did you capture any labelled events?", file=sys.stderr)
+        print("No usable samples -- every capture was silent, or nothing was "
+              "labelled.", file=sys.stderr)
         return 1
 
     print(f"Weapon set {ws.name!r} from {session_dir}\n")
@@ -469,6 +506,10 @@ def register(sub) -> None:
     p.add_argument("--from", dest="from_session", metavar="SESSION",
                    help="learn session to build the weapon set from")
     p.add_argument("--name", help="name for the weapon set (default: session name)")
+    p.add_argument("--merge", metavar="A=X,B=X",
+                   help="merge labels into one class, e.g. assault=rifle,smg=rifle. "
+                        "Use when two weapons are too alike to separate -- one "
+                        "combined class still distinguishes them from the rest.")
     p.add_argument("--out", help="explicit output path")
     p.add_argument("--list", action="store_true", help="list existing weapon sets")
     p.add_argument("--live", action="store_true",

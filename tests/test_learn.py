@@ -102,6 +102,46 @@ def test_unmarked_audio_is_not_saved(tmp_path):
     assert session.counts["gunshot"] == 0
 
 
+def test_reopening_a_session_does_not_overwrite_captures(tmp_path):
+    """Capturing a weapon set takes several sittings.
+
+    Restarting numbering at 001 would silently destroy the previous sitting's
+    work, and the loss would only surface when the templates came out wrong.
+    """
+    events = [("gunshot", narrowband(300, 0.15)) for _ in range(3)]
+    first = _run_session(tmp_path, events, ["gunshot"])
+    assert first.counts["gunshot"] == 3
+
+    second = LearnSession(
+        name="t", labels=["gunshot"], samplerate=SR,
+        pre_roll_s=0.4, post_roll_s=0.1, buffer_s=3.0, root=tmp_path,
+    )
+    assert second.counts["gunshot"] == 3, "reopened session restarted numbering"
+
+    for chunk in np.array_split(quiet(0.5), 40):
+        second.on_audio(chunk)
+    for chunk in np.array_split(narrowband(300, 0.15), 10):
+        second.on_audio(chunk)
+    second.mark("gunshot")
+    second.flush()
+
+    files = sorted(p.name for p in second.dir.glob("gunshot_*.wav"))
+    assert len(files) == 4, f"expected 4 captures, found {files}"
+    assert "gunshot_004.wav" in files
+
+
+def test_resume_recovers_from_a_killed_session(tmp_path):
+    """A session killed rather than stopped leaves WAVs but stale metadata."""
+    events = [("gunshot", narrowband(300, 0.15)) for _ in range(2)]
+    first = _run_session(tmp_path, events, ["gunshot"])
+    (first.dir / "session.json").unlink()
+
+    second = LearnSession(
+        name="t", labels=["gunshot"], samplerate=SR, root=tmp_path,
+    )
+    assert second.counts["gunshot"] == 2, "filenames on disk were ignored"
+
+
 def test_analysis_recovers_each_label(tmp_path):
     events = (
         [("laser", narrowband(3000, 0.12)) for _ in range(3)]
