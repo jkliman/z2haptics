@@ -260,6 +260,81 @@ def test_process_list_is_parsed_from_free_text(controller, config):
     window.close()
 
 
+def test_scrolling_over_an_unfocused_spinbox_does_not_change_it(qapp):
+    """Regression: settings appeared to 'auto adjust'.
+
+    The band editors sit in a scroll area. By default a wheel event over a spin
+    box edits its value instead of scrolling, so scrolling past a band silently
+    retuned it and discarded anything just typed. The gate was worst hit -- its
+    0.0005 step meant one notch visibly moved it.
+    """
+    from PySide6.QtCore import QPoint, QPointF, Qt as QtCore_Qt
+    from PySide6.QtGui import QWheelEvent
+
+    band = Band(name="gunfire", low_hz=90, high_hz=450, gate=0.0035)
+    editor = BandEditor(band)
+    editor.gate.clearFocus()
+    before = editor.gate.value()
+
+    def wheel(widget):
+        event = QWheelEvent(
+            QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, 120),
+            QtCore_Qt.MouseButton.NoButton, QtCore_Qt.KeyboardModifier.NoModifier,
+            QtCore_Qt.ScrollPhase.NoScrollPhase, False,
+        )
+        QApplication.sendEvent(widget, event)
+
+    for _ in range(5):
+        wheel(editor.gate)
+    assert editor.gate.value() == before, "unfocused spin box was changed by scrolling"
+    assert band.gate == before, "the band itself was retuned by scrolling"
+
+
+def test_focused_spinbox_still_accepts_the_wheel(qapp):
+    """The guard must not make the control unusable once deliberately focused."""
+    from PySide6.QtCore import QPoint, QPointF, Qt as QtCore_Qt
+    from PySide6.QtGui import QWheelEvent
+
+    band = Band(name="gunfire", low_hz=90, high_hz=450, gate=0.0035)
+    editor = BandEditor(band)
+    editor.gate.setFocus()
+    if not editor.gate.hasFocus():
+        pytest.skip("offscreen platform will not grant focus")
+
+    before = editor.gate.value()
+    event = QWheelEvent(
+        QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, 120),
+        QtCore_Qt.MouseButton.NoButton, QtCore_Qt.KeyboardModifier.NoModifier,
+        QtCore_Qt.ScrollPhase.NoScrollPhase, False,
+    )
+    QApplication.sendEvent(editor.gate, event)
+    assert editor.gate.value() != before
+
+
+def test_gate_from_current_level(qapp):
+    """Setting a five-decimal gate by hand is guesswork; measure it instead."""
+    band = Band(name="gunfire", low_hz=90, high_hz=450, gate=0.0)
+    editor = BandEditor(band)
+
+    editor.set_activity({
+        "level": 0.004, "peak": 0.004, "gate": 0.0, "open": True,
+        "flatness": 0.5, "rate": 0.0, "sent": 0,
+        "rejections": {"frames": 10, "accepted": 0}, "dominant": ("threshold", 0),
+    })
+    editor._gate_from_current()
+
+    assert band.gate > 0.004, "gate should sit above the measured level"
+    assert band.gate < 0.006
+
+
+def test_gate_from_current_with_no_signal_explains_itself(qapp):
+    band = Band(name="gunfire", low_hz=90, high_hz=450, gate=0.001)
+    editor = BandEditor(band)
+    editor._gate_from_current()
+    assert band.gate == 0.001, "gate changed despite there being no signal"
+    assert editor.advice.text()
+
+
 def test_band_editor_shows_live_activity(qapp):
     """The meter and readout must live with the controls that shape them."""
     band = Band(name="gunfire", low_hz=90, high_hz=450, gate=0.003)
@@ -335,6 +410,44 @@ def test_editing_a_band_resets_the_counters(controller, config):
 
 def test_reset_counters_is_safe_while_stopped(controller):
     controller.reset_counters()
+
+
+def test_autoswitch_does_not_hijack_the_editor_mid_edit(controller, config):
+    """Regression: edits could be saved onto the wrong profile.
+
+    Auto-switching fires on the engine's own thread. If the form reloaded to the
+    new profile while an edit was in flight, the controls would silently point
+    at a different profile and Save would write the changes to it.
+    """
+    window = SettingsWindow(controller, config)
+    window._refresh_profile_combos()
+    window._load_profile_into_form()
+
+    editing = config.active_profile
+    other = next(n for n in controller.profiles if n != editing)
+
+    window._band_editors[0].duration.setValue(123)
+    assert window._dirty
+
+    window._on_profile_changed(other)
+
+    assert config.active_profile == editing, "editor followed the auto-switch"
+    assert controller.profiles[editing].bands[0].duration_ms == 123
+    assert other in window.dirty_label.text()
+    window.close()
+
+
+def test_autoswitch_follows_when_there_are_no_unsaved_edits(controller, config):
+    window = SettingsWindow(controller, config)
+    window._refresh_profile_combos()
+    window._load_profile_into_form()
+    assert not window._dirty
+
+    other = next(n for n in controller.profiles if n != config.active_profile)
+    window._on_profile_changed(other)
+
+    assert config.active_profile == other
+    window.close()
 
 
 def test_closing_the_window_hides_rather_than_quits(controller, config):

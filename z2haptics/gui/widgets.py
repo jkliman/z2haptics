@@ -29,6 +29,35 @@ GATE_LINE = QColor(200, 90, 90)
 FLASH = QColor(255, 255, 255)
 
 
+class _NoWheelMixin:
+    """Ignore mouse-wheel input unless the control has keyboard focus.
+
+    The band editors live in a scroll area. By default a wheel event over a spin
+    box edits its value instead of scrolling the list, so scrolling past a band
+    silently changes its tuning -- which reads as settings "auto adjusting" and
+    quietly discards whatever was just typed. Requiring focus first keeps the
+    wheel meaning "scroll" until you deliberately click into a field.
+    """
+
+    def wheelEvent(self, event):  # noqa: N802 - Qt naming
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class NoWheelDoubleSpinBox(_NoWheelMixin, QDoubleSpinBox):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+
+class NoWheelSpinBox(_NoWheelMixin, QSpinBox):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+
 class BandMeter(QWidget):
     """A level bar for one band, with a gate marker and an onset flash.
 
@@ -122,6 +151,7 @@ class BandEditor(QGroupBox):
     def __init__(self, band: Band, parent=None):
         super().__init__(band.name, parent)
         self.band = band
+        self._current_level = 0.0
         self.setCheckable(True)
         self.setChecked(band.enabled)
 
@@ -147,34 +177,48 @@ class BandEditor(QGroupBox):
 
         # -- frequency range
         row = QHBoxLayout()
-        self.low = QDoubleSpinBox(); self.low.setRange(10, 20000); self.low.setSuffix(" Hz")
-        self.high = QDoubleSpinBox(); self.high.setRange(10, 22000); self.high.setSuffix(" Hz")
+        self.low = NoWheelDoubleSpinBox(); self.low.setRange(10, 20000); self.low.setSuffix(" Hz")
+        self.high = NoWheelDoubleSpinBox(); self.high.setRange(10, 22000); self.high.setSuffix(" Hz")
         self.low.setValue(band.low_hz); self.high.setValue(band.high_hz)
         row.addWidget(self.low); row.addWidget(QLabel("to")); row.addWidget(self.high)
         form.addRow("Frequency", self._wrap(row))
 
         # -- detection
-        self.sensitivity = QDoubleSpinBox()
+        self.sensitivity = NoWheelDoubleSpinBox()
         self.sensitivity.setRange(1.0, 10.0); self.sensitivity.setSingleStep(0.05)
         self.sensitivity.setValue(band.sensitivity)
         self.sensitivity.setToolTip(
-            "Flux must exceed this multiple of the rolling median to count as an "
-            "onset. Higher = fewer, more certain detections.")
+            "How many standard deviations above typical the flux must jump to "
+            "count as an onset. Higher = fewer, more certain detections.\n\n"
+            "2-4 is the useful range. Below about 2 almost everything triggers.")
         form.addRow("Sensitivity", self.sensitivity)
 
-        self.gate = QDoubleSpinBox()
+        row = QHBoxLayout()
+        self.gate = NoWheelDoubleSpinBox()
         self.gate.setRange(0.0, 1.0); self.gate.setDecimals(5)
         self.gate.setSingleStep(0.0005); self.gate.setValue(band.gate)
-        self.gate.setToolTip("Absolute level floor. Below this the band is treated as silent.")
-        form.addRow("Gate", self.gate)
+        self.gate.setToolTip(
+            "Absolute level floor. Below this the band is treated as silent.\n\n"
+            "Typing five-decimal numbers is guesswork -- use the button beside "
+            "it instead.")
+        row.addWidget(self.gate, 1)
 
-        self.refractory = QDoubleSpinBox()
+        self.gate_from_now = QPushButton("Set from now")
+        self.gate_from_now.setToolTip(
+            "Set the gate just above whatever is playing right now, so this "
+            "background stops triggering the band.\n\n"
+            "Let the ambience you want ignored play on its own, then click.")
+        self.gate_from_now.clicked.connect(self._gate_from_current)
+        row.addWidget(self.gate_from_now)
+        form.addRow("Gate", self._wrap(row))
+
+        self.refractory = NoWheelDoubleSpinBox()
         self.refractory.setRange(0, 2000); self.refractory.setSuffix(" ms")
         self.refractory.setValue(band.refractory_ms)
         self.refractory.setToolTip("Minimum spacing between onsets in this band.")
         form.addRow("Refractory", self.refractory)
 
-        self.min_share = QDoubleSpinBox()
+        self.min_share = NoWheelDoubleSpinBox()
         self.min_share.setRange(0.0, 1.0); self.min_share.setSingleStep(0.05)
         self.min_share.setValue(band.min_share)
         self.min_share.setToolTip(
@@ -182,7 +226,7 @@ class BandEditor(QGroupBox):
             "elsewhere keeps falsely triggering this band. 0 disables the check.")
         form.addRow("Min share", self.min_share)
 
-        self.min_flatness = QDoubleSpinBox()
+        self.min_flatness = NoWheelDoubleSpinBox()
         self.min_flatness.setRange(0.0, 1.0); self.min_flatness.setSingleStep(0.05)
         self.min_flatness.setValue(band.min_flatness)
         self.min_flatness.setToolTip(
@@ -195,7 +239,7 @@ class BandEditor(QGroupBox):
             "0.45 is a good starting point for gunfire.")
         form.addRow("Min flatness", self.min_flatness)
 
-        self.max_rate = QDoubleSpinBox()
+        self.max_rate = NoWheelDoubleSpinBox()
         self.max_rate.setRange(0.0, 60.0); self.max_rate.setSingleStep(1.0)
         self.max_rate.setValue(band.max_rate)
         self.max_rate.setToolTip(
@@ -205,7 +249,7 @@ class BandEditor(QGroupBox):
             "more informative ones.")
         form.addRow("Max rate", self.max_rate)
 
-        self.background_subtraction = QDoubleSpinBox()
+        self.background_subtraction = NoWheelDoubleSpinBox()
         self.background_subtraction.setRange(0.0, 1.0)
         self.background_subtraction.setSingleStep(0.1)
         self.background_subtraction.setValue(band.background_subtraction)
@@ -217,23 +261,23 @@ class BandEditor(QGroupBox):
         form.addRow("Background sub.", self.background_subtraction)
 
         # -- pulse shaping
-        self.duration = QSpinBox()
+        self.duration = NoWheelSpinBox()
         self.duration.setRange(1, 2000); self.duration.setSuffix(" ms")
         self.duration.setValue(band.duration_ms)
         self.duration.setToolTip("How long the motor runs for this band's pulses.")
         form.addRow("Duration", self.duration)
 
         row = QHBoxLayout()
-        self.smin = QSpinBox(); self.smin.setRange(0, 100); self.smin.setValue(band.strength_min)
-        self.smax = QSpinBox(); self.smax.setRange(0, 100); self.smax.setValue(band.strength_max)
+        self.smin = NoWheelSpinBox(); self.smin.setRange(0, 100); self.smin.setValue(band.strength_min)
+        self.smax = NoWheelSpinBox(); self.smax.setRange(0, 100); self.smax.setValue(band.strength_max)
         row.addWidget(self.smin); row.addWidget(QLabel("to")); row.addWidget(self.smax)
         form.addRow("Strength", self._wrap(row))
 
         row = QHBoxLayout()
-        self.floor_db = QDoubleSpinBox()
+        self.floor_db = NoWheelDoubleSpinBox()
         self.floor_db.setRange(-140, 0); self.floor_db.setSuffix(" dB")
         self.floor_db.setValue(band.level_floor_db)
-        self.ceil_db = QDoubleSpinBox()
+        self.ceil_db = NoWheelDoubleSpinBox()
         self.ceil_db.setRange(-140, 0); self.ceil_db.setSuffix(" dB")
         self.ceil_db.setValue(band.level_ceil_db)
         row.addWidget(self.floor_db); row.addWidget(QLabel("to")); row.addWidget(self.ceil_db)
@@ -244,7 +288,7 @@ class BandEditor(QGroupBox):
             "Widen it if everything feels the same.")
         form.addRow("Loudness window", w)
 
-        self.priority = QSpinBox()
+        self.priority = NoWheelSpinBox()
         self.priority.setRange(0, 10); self.priority.setValue(band.priority)
         self.priority.setToolTip(
             "Nudges which band wins when several fire together. Deliberately only a "
@@ -278,9 +322,17 @@ class BandEditor(QGroupBox):
 
     # -- live feedback --------------------------------------------------------
 
+    def _gate_from_current(self) -> None:
+        """Set the gate just above the level playing right now."""
+        if self._current_level <= 0.0:
+            self.advice.setText("No signal to measure -- play some audio first.")
+            return
+        self.gate.setValue(min(1.0, self._current_level * 1.15))
+
     def set_activity(self, activity: dict) -> None:
         """Update the inline meter and readout from one poll of engine state."""
         level = activity.get("level", 0.0)
+        self._current_level = level
         self.meter.set_level(level, self.band.gate, activity.get("open", False))
 
         rate = activity.get("rate", 0.0)

@@ -497,7 +497,18 @@ class SettingsWindow(QWidget):
         self._rebuild_meters()
 
     def _on_profile_changed(self, name: str) -> None:
-        # Auto-switching can change the profile behind our back.
+        # Auto-switching changes the profile behind our back. Reloading the form
+        # in the middle of an edit would swap which profile the controls point
+        # at, so Save would then write the edits onto the wrong profile. Hold the
+        # editor where it is until the changes are saved or discarded.
+        if self._dirty and name != self.config.active_profile:
+            self.dirty_label.setText(
+                f"Unsaved changes — auto-switch moved the engine to "
+                f"{name!r}, editor still showing {self.config.active_profile!r}. "
+                f"Save, or turn off auto-switch on the General tab."
+            )
+            return
+
         if name != self.config.active_profile:
             self.config.active_profile = name
             self._refresh_profile_combos()
