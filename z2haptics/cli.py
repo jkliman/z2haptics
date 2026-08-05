@@ -24,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import __version__, learn_cli
+from . import __version__, hud_cli, learn_cli
 from .analysis import BandAnalyzer
 from .api import PIPE_LEGACY, PIPE_V2, HapticSink, Pulse, X1Connection, X1Error
 from .audio import LoopbackCapture, list_devices
@@ -495,6 +495,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_gui)
 
     learn_cli.register(sub)
+    hud_cli.register(sub)
 
     return ap
 
